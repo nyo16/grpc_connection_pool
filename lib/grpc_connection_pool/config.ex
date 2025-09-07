@@ -89,7 +89,8 @@ defmodule GrpcConnectionPool.Config do
   @type connection_config :: %{
           keepalive: pos_integer(),
           health_check: boolean(),
-          ping_interval: pos_integer() | nil
+          ping_interval: pos_integer() | nil,
+          suppress_connection_errors: boolean()
         }
 
   @type retry_config :: %{
@@ -120,7 +121,8 @@ defmodule GrpcConnectionPool.Config do
             connection: %{
               keepalive: 30_000,
               health_check: true,
-              ping_interval: 25_000
+              ping_interval: 25_000,
+              suppress_connection_errors: false
             }
 
   @doc """
@@ -291,7 +293,8 @@ defmodule GrpcConnectionPool.Config do
     %{
       keepalive: opts[:keepalive] || 30_000,
       health_check: opts[:health_check] != false,
-      ping_interval: opts[:ping_interval] || 25_000
+      ping_interval: opts[:ping_interval] || 25_000,
+      suppress_connection_errors: opts[:suppress_connection_errors] || false
     }
   end
 

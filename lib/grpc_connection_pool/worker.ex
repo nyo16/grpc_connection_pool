@@ -150,6 +150,25 @@ defmodule GrpcConnectionPool.Worker do
     {:noreply, state}
   end
 
+  def handle_info({:gun_down, _conn_pid, _protocol, reason, _killed_streams}, state) do
+    unless state.config.connection.suppress_connection_errors do
+      Logger.info("gRPC connection closed by server: #{inspect(reason)}")
+    end
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:gun_up, _conn_pid, _protocol}, state) do
+    Logger.debug("Gun connection is up")
+    {:noreply, state}
+  end
+
+  def handle_info({:gun_error, _conn_pid, reason}, state) do
+    unless state.config.connection.suppress_connection_errors do
+      Logger.error("Gun connection error: #{inspect(reason)}")
+    end
+    {:stop, {:gun_error, reason}, state}
+  end
+
   @impl GenServer
   def terminate(_reason, state) do
     cleanup_connection(state.channel)

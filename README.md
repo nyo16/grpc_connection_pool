@@ -127,7 +127,8 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
   connection: [
     keepalive: 30_000,           # HTTP/2 keepalive interval
     ping_interval: 25_000,       # Ping interval to keep connections warm
-    health_check: true           # Enable connection health monitoring
+    health_check: true,          # Enable connection health monitoring
+    suppress_connection_errors: false  # Suppress gun_down/gun_error logs (useful for GCP endpoints)
   ]
 ])
 ```
@@ -800,6 +801,24 @@ If you see frequent reconnections:
 2. Verify service availability
 3. Adjust `ping_interval` and `keepalive` settings
 4. Check for firewall or load balancer timeouts
+
+### Connection Error Messages with GCP Services
+
+GCP gRPC endpoints have hardcoded timeouts that periodically close connections, causing `gun_down` error messages. This is normal behavior and the connection pool will automatically replace the workers. To suppress these expected error messages:
+
+```elixir
+config :my_app, GrpcConnectionPool,
+  endpoint: [
+    type: :production,
+    host: "pubsub.googleapis.com",  # Or other GCP gRPC endpoints
+    port: 443
+  ],
+  connection: [
+    suppress_connection_errors: true  # Suppress expected gun_down errors from GCP
+  ]
+```
+
+The worker processes will still crash gracefully and be replaced by Poolex as designed.
 
 ## Contributing
 
