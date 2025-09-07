@@ -114,7 +114,7 @@ defmodule GrpcConnectionPool.Worker do
   def handle_info(:connect, state) do
     case create_connection(state.config) do
       {:ok, channel} ->
-        Logger.info("gRPC connection established")
+        Logger.debug("gRPC connection established")
         timer = schedule_ping(state.config)
         {:noreply, %State{state | channel: channel, ping_timer: timer}}
 
@@ -152,7 +152,7 @@ defmodule GrpcConnectionPool.Worker do
 
   def handle_info({:gun_down, _conn_pid, _protocol, reason, _killed_streams}, state) do
     unless state.config.connection.suppress_connection_errors do
-      Logger.info("gRPC connection closed by server: #{inspect(reason)}")
+      Logger.debug("gRPC connection closed by server: #{inspect(reason)}")
     end
     {:stop, :normal, state}
   end
