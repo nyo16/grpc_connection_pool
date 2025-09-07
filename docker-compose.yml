@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=my-project-id
+    ports:
+      - "8085:8085"
+    environment:
+      - PUBSUB_PROJECT_ID=my-project-id
+    volumes:
+      - pubsub-emulator-data:/root/.config/gcloud/emulators/pubsub
+
+volumes:
+  pubsub-emulator-data:
