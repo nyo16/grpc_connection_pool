@@ -69,8 +69,8 @@ defmodule GrpcConnectionPool.MixProject do
 
   defp deps do
     [
-      {:poolex, "~> 1.4.1"},
-      {:grpc, "~> 0.10.2"},
+      {:poolex, "~> 1.4.2"},
+      {:grpc, "~> 0.11.5", override: true},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
