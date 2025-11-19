@@ -198,7 +198,7 @@ defmodule GrpcConnectionPool.Config do
     if is_nil(host) do
       {:error, "host is required for production configuration"}
     else
-      new([
+      new(
         endpoint: [
           type: :production,
           host: host,
@@ -209,7 +209,7 @@ defmodule GrpcConnectionPool.Config do
           size: opts[:pool_size] || 5,
           name: opts[:pool_name]
         ]
-      ])
+      )
     end
   end
 
@@ -226,7 +226,7 @@ defmodule GrpcConnectionPool.Config do
   """
   @spec local(keyword()) :: {:ok, t()}
   def local(opts \\ []) do
-    new([
+    new(
       endpoint: [
         type: :local,
         host: opts[:host] || "localhost",
@@ -241,7 +241,7 @@ defmodule GrpcConnectionPool.Config do
         size: opts[:pool_size] || 3,
         name: opts[:pool_name]
       ]
-    ])
+    )
   end
 
   @doc """

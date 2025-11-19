@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.1.3"
+  @version "0.1.4"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -14,20 +14,25 @@ defmodule GrpcConnectionPool.MixProject do
       docs: docs(),
       package: package(),
       description: description(),
-      test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
-        coveralls: :test,
-        "coveralls.detail": :test,
-        "coveralls.post": :test,
-        "coveralls.html": :test,
-        "coveralls.cobertura": :test
-      ]
+      test_coverage: [tool: ExCoveralls]
     ]
   end
 
   def application do
     [
       extra_applications: [:logger]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.post": :test,
+        "coveralls.html": :test,
+        "coveralls.cobertura": :test
+      ]
     ]
   end
 
@@ -57,12 +62,12 @@ defmodule GrpcConnectionPool.MixProject do
       main: "GrpcConnectionPool",
       source_url: @source_url,
       extras: [
-        "README.md": [title: "Overview"],
+        "README.md": [title: "Overview"]
       ],
       groups_for_modules: [
-        "Core": [GrpcConnectionPool, GrpcConnectionPool.Pool],
-        "Configuration": [GrpcConnectionPool.Config],
-        "Internal": [GrpcConnectionPool.Worker]
+        Core: [GrpcConnectionPool, GrpcConnectionPool.Pool],
+        Configuration: [GrpcConnectionPool.Config],
+        Internal: [GrpcConnectionPool.Worker]
       ]
     ]
   end
@@ -79,7 +84,7 @@ defmodule GrpcConnectionPool.MixProject do
       {:goth, "~> 1.4", only: :test},
       # Optional dependencies for testing and development
 
-      {:googleapis_proto_ex, "~> 0.3.0", only: :test}
+      {:googleapis_proto_ex, "~> 0.3.3", only: :test}
     ]
   end
 end

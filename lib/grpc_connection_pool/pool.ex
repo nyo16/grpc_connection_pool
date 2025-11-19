@@ -84,6 +84,7 @@ defmodule GrpcConnectionPool.Pool do
     case Config.new(config_or_opts) do
       {:ok, config} ->
         pool_name = get_pool_name(config, config_or_opts)
+
         {
           Poolex,
           pool_id: pool_name,
@@ -99,6 +100,7 @@ defmodule GrpcConnectionPool.Pool do
 
   def child_spec(%Config{} = config) do
     pool_name = config.pool.name || @default_pool_name
+
     {
       Poolex,
       pool_id: pool_name,
@@ -138,7 +140,7 @@ defmodule GrpcConnectionPool.Pool do
 
   def start_link(%Config{} = config, opts) do
     pool_name = opts[:name] || config.pool.name || @default_pool_name
-    
+
     Poolex.start_link(
       pool_id: pool_name,
       worker_module: Worker,
@@ -151,7 +153,7 @@ defmodule GrpcConnectionPool.Pool do
     case Config.new(config_opts) do
       {:ok, config} ->
         pool_name = opts[:name] || get_pool_name(config, config_opts) || @default_pool_name
-        
+
         Poolex.start_link(
           pool_id: pool_name,
           worker_module: Worker,
@@ -194,9 +196,11 @@ defmodule GrpcConnectionPool.Pool do
     checkout_timeout = opts[:checkout_timeout] || 15_000
 
     try do
-      Poolex.run(pool_name, fn worker ->
-        Worker.execute(worker, operation_fn)
-      end, checkout_timeout: checkout_timeout)
+      Poolex.run(
+        pool_name,
+        fn worker ->
+          Worker.execute(worker, operation_fn)
+        end, checkout_timeout: checkout_timeout)
     rescue
       error -> {:error, error}
     catch
@@ -241,7 +245,7 @@ defmodule GrpcConnectionPool.Pool do
   @spec stop(atom()) :: :ok
   def stop(pool_name \\ @default_pool_name) do
     try do
-      spec = Poolex.child_spec([worker_module: Worker, name: pool_name])
+      spec = Poolex.child_spec(worker_module: Worker, name: pool_name)
       child_id = Map.get(spec, :id)
       DynamicSupervisor.terminate_child(Poolex.DynamicSupervisor, child_id)
     rescue
@@ -254,8 +258,8 @@ defmodule GrpcConnectionPool.Pool do
   # Private functions
 
   defp get_pool_name(config, opts) do
-    opts[:name] || 
-    Keyword.get(opts, :pool, [])[:name] ||
-    config.pool.name
+    opts[:name] ||
+      Keyword.get(opts, :pool, [])[:name] ||
+      config.pool.name
   end
 end

@@ -59,7 +59,7 @@ defmodule GrpcConnectionPool.Worker do
   def init(config) do
     # Start connection process asynchronously
     send(self(), :connect)
-    
+
     state = %State{
       channel: nil,
       config: config,
@@ -103,7 +103,7 @@ defmodule GrpcConnectionPool.Worker do
     {:reply, status, state}
   end
 
-  def handle_call(:reconnect, _from, state) do
+  def handle_call(:reconnect, _from, %State{} = state) do
     cleanup_connection(state.channel)
     cancel_ping_timer(state.ping_timer)
     send(self(), :connect)
@@ -111,7 +111,7 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   @impl GenServer
-  def handle_info(:connect, state) do
+  def handle_info(:connect, %State{} = state) do
     case create_connection(state.config) do
       {:ok, channel} ->
         Logger.debug("gRPC connection established")
@@ -134,7 +134,9 @@ defmodule GrpcConnectionPool.Worker do
         case send_ping(channel) do
           :ok ->
             timer = schedule_ping(config)
-            {:noreply, %State{state | ping_timer: timer, last_ping: System.monotonic_time(:millisecond)}}
+
+            {:noreply,
+             %State{state | ping_timer: timer, last_ping: System.monotonic_time(:millisecond)}}
 
           :error ->
             Logger.warning("Ping failed, reconnecting...")
@@ -154,6 +156,7 @@ defmodule GrpcConnectionPool.Worker do
     unless state.config.connection.suppress_connection_errors do
       Logger.debug("gRPC connection closed by server: #{inspect(reason)}")
     end
+
     {:stop, :normal, state}
   end
 
@@ -166,6 +169,7 @@ defmodule GrpcConnectionPool.Worker do
     unless state.config.connection.suppress_connection_errors do
       Logger.error("Gun connection error: #{inspect(reason)}")
     end
+
     {:stop, {:gun_error, reason}, state}
   end
 
@@ -185,7 +189,7 @@ defmodule GrpcConnectionPool.Worker do
     if retry_config do
       create_connection_with_retry(host, port, opts, retry_config)
     else
-      GRPC.Stub.connect(host, port, opts)
+      GRPC.Stub.connect("#{host}:#{port}", opts)
     end
   end
 
@@ -193,14 +197,23 @@ defmodule GrpcConnectionPool.Worker do
     create_connection_with_retry(host, port, opts, retry_config, retry_config.max_attempts)
   end
 
-  defp create_connection_with_retry(host, port, opts, retry_config, attempts_left) when attempts_left > 0 do
-    case GRPC.Stub.connect(host, port, opts) do
+  defp create_connection_with_retry(host, port, opts, retry_config, attempts_left)
+       when attempts_left > 0 do
+    case GRPC.Stub.connect("#{host}:#{port}", opts) do
       {:ok, channel} ->
         {:ok, channel}
 
       {:error, _reason} when attempts_left > 1 ->
-        delay = min(retry_config.base_delay * (retry_config.max_attempts - attempts_left + 1), retry_config.max_delay)
-        Logger.info("Connection failed, retrying in #{delay}ms... (#{attempts_left - 1} attempts left)")
+        delay =
+          min(
+            retry_config.base_delay * (retry_config.max_attempts - attempts_left + 1),
+            retry_config.max_delay
+          )
+
+        Logger.info(
+          "Connection failed, retrying in #{delay}ms... (#{attempts_left - 1} attempts left)"
+        )
+
         :timer.sleep(delay)
         create_connection_with_retry(host, port, opts, retry_config, attempts_left - 1)
 
@@ -228,6 +241,7 @@ defmodule GrpcConnectionPool.Worker do
       case channel do
         %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
           if Process.alive?(pid), do: :ok, else: :error
+
         _ ->
           :error
       end
@@ -240,10 +254,14 @@ defmodule GrpcConnectionPool.Worker do
 
   defp schedule_ping(config) do
     case config.connection.ping_interval do
-      nil -> nil
+      nil ->
+        nil
+
       interval when is_integer(interval) and interval > 0 ->
         Process.send_after(self(), :ping, interval)
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
@@ -257,6 +275,7 @@ defmodule GrpcConnectionPool.Worker do
   defp cancel_ping_timer(timer), do: Process.cancel_timer(timer)
 
   defp cleanup_connection(nil), do: :ok
+
   defp cleanup_connection(%GRPC.Channel{} = channel) do
     try do
       GRPC.Stub.disconnect(channel)
@@ -267,7 +286,7 @@ defmodule GrpcConnectionPool.Worker do
     end
   end
 
-  defp update_last_ping(state) do
+  defp update_last_ping(%State{} = state) do
     %State{state | last_ping: System.monotonic_time(:millisecond)}
   end
 end
