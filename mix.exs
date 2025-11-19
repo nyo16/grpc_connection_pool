@@ -62,7 +62,8 @@ defmodule GrpcConnectionPool.MixProject do
       main: "GrpcConnectionPool",
       source_url: @source_url,
       extras: [
-        "README.md": [title: "Overview"]
+        "README.md": [title: "Overview"],
+        "LICENSE": [title: "License"]
       ],
       groups_for_modules: [
         Core: [GrpcConnectionPool, GrpcConnectionPool.Pool],
@@ -75,7 +76,7 @@ defmodule GrpcConnectionPool.MixProject do
   defp deps do
     [
       {:poolex, "~> 1.4.2"},
-      {:grpc, "~> 0.11.5", override: true},
+      {:grpc, "~> 0.11.5"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
