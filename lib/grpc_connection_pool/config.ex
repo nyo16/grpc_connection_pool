@@ -83,14 +83,16 @@ defmodule GrpcConnectionPool.Config do
   @type pool_config :: %{
           size: pos_integer(),
           name: atom() | nil,
-          checkout_timeout: pos_integer()
+          telemetry_interval: pos_integer()
         }
 
   @type connection_config :: %{
           keepalive: pos_integer(),
           health_check: boolean(),
           ping_interval: pos_integer() | nil,
-          suppress_connection_errors: boolean()
+          suppress_connection_errors: boolean(),
+          backoff_min: pos_integer(),
+          backoff_max: pos_integer()
         }
 
   @type retry_config :: %{
@@ -116,13 +118,15 @@ defmodule GrpcConnectionPool.Config do
             pool: %{
               size: 5,
               name: nil,
-              checkout_timeout: 15_000
+              telemetry_interval: 5_000
             },
             connection: %{
               keepalive: 30_000,
               health_check: true,
               ping_interval: 25_000,
-              suppress_connection_errors: false
+              suppress_connection_errors: false,
+              backoff_min: 1_000,
+              backoff_max: 30_000
             }
 
   @doc """
@@ -285,7 +289,7 @@ defmodule GrpcConnectionPool.Config do
     %{
       size: opts[:size] || 5,
       name: opts[:name],
-      checkout_timeout: opts[:checkout_timeout] || 15_000
+      telemetry_interval: opts[:telemetry_interval] || 5_000
     }
   end
 
@@ -294,7 +298,9 @@ defmodule GrpcConnectionPool.Config do
       keepalive: opts[:keepalive] || 30_000,
       health_check: opts[:health_check] != false,
       ping_interval: opts[:ping_interval] || 25_000,
-      suppress_connection_errors: opts[:suppress_connection_errors] || false
+      suppress_connection_errors: opts[:suppress_connection_errors] || false,
+      backoff_min: opts[:backoff_min] || 1_000,
+      backoff_max: opts[:backoff_max] || 30_000
     }
   end
 

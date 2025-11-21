@@ -31,8 +31,25 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
       # Start the pool
       case Pool.start_link(config, name: pool_name) do
         {:ok, _pid} ->
-          on_exit(fn -> Pool.stop(pool_name) end)
-          %{pool_name: pool_name}
+          # Wait for at least one connection to be ready
+          case wait_for_connection(pool_name, 5000) do
+            :ok ->
+              on_exit(fn ->
+                try do
+                  Pool.stop(pool_name)
+                catch
+                  :exit, _reason -> :ok
+                end
+              end)
+              %{pool_name: pool_name}
+            {:error, :timeout} ->
+              try do
+                Pool.stop(pool_name)
+              catch
+                :exit, _reason -> :ok
+              end
+              {:skip, "Pub/Sub emulator not available: timeout waiting for connection"}
+          end
 
         {:error, reason} ->
           # Skip test if emulator is not available
@@ -46,35 +63,25 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
       topic_path = "projects/test-project/topics/#{topic_name}"
 
       # Create a topic
-      create_operation = fn channel ->
-        request = %Google.Pubsub.V1.Topic{name: topic_path}
+      assert {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.Topic{name: topic_path}
+      assert {:ok, %Google.Pubsub.V1.Topic{name: ^topic_path}} =
         Google.Pubsub.V1.Publisher.Stub.create_topic(channel, request)
-      end
-
-      result = Pool.execute(create_operation, pool: pool_name)
-      assert match?({:ok, {:ok, %Google.Pubsub.V1.Topic{name: ^topic_path}}}, result)
 
       # List topics
-      list_operation = fn channel ->
-        request = %Google.Pubsub.V1.ListTopicsRequest{
-          project: "projects/test-project",
-          page_size: 10
-        }
-
-        Google.Pubsub.V1.Publisher.Stub.list_topics(channel, request)
-      end
-
-      {:ok, {:ok, response}} = Pool.execute(list_operation, pool: pool_name)
+      assert {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.ListTopicsRequest{
+        project: "projects/test-project",
+        page_size: 10
+      }
+      assert {:ok, response} = Google.Pubsub.V1.Publisher.Stub.list_topics(channel, request)
       assert Enum.any?(response.topics, fn topic -> topic.name == topic_path end)
 
       # Clean up - delete the topic
-      delete_operation = fn channel ->
-        request = %Google.Pubsub.V1.DeleteTopicRequest{topic: topic_path}
+      assert {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.DeleteTopicRequest{topic: topic_path}
+      assert {:ok, %Google.Protobuf.Empty{}} =
         Google.Pubsub.V1.Publisher.Stub.delete_topic(channel, request)
-      end
-
-      assert {:ok, {:ok, %Google.Protobuf.Empty{}}} =
-               Pool.execute(delete_operation, pool: pool_name)
     end
 
     @tag timeout: 10_000
@@ -85,63 +92,45 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
       subscription_path = "projects/test-project/subscriptions/#{subscription_name}"
 
       # Create topic
-      create_topic = fn channel ->
-        request = %Google.Pubsub.V1.Topic{name: topic_path}
-        Google.Pubsub.V1.Publisher.Stub.create_topic(channel, request)
-      end
-
-      {:ok, {:ok, _}} = Pool.execute(create_topic, pool: pool_name)
+      {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.Topic{name: topic_path}
+      {:ok, _} = Google.Pubsub.V1.Publisher.Stub.create_topic(channel, request)
 
       # Create subscription
-      create_subscription = fn channel ->
-        request = %Google.Pubsub.V1.Subscription{
-          name: subscription_path,
-          topic: topic_path,
-          ack_deadline_seconds: 60
-        }
-
-        Google.Pubsub.V1.Subscriber.Stub.create_subscription(channel, request)
-      end
-
-      {:ok, {:ok, _}} = Pool.execute(create_subscription, pool: pool_name)
+      {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.Subscription{
+        name: subscription_path,
+        topic: topic_path,
+        ack_deadline_seconds: 60
+      }
+      {:ok, _} = Google.Pubsub.V1.Subscriber.Stub.create_subscription(channel, request)
 
       # Publish message
       message_data = "Hello from gRPC connection pool!"
-
-      publish_operation = fn channel ->
-        message = %Google.Pubsub.V1.PubsubMessage{
-          data: message_data,
-          attributes: %{"source" => "grpc_connection_pool_test"}
-        }
-
-        request = %Google.Pubsub.V1.PublishRequest{
-          topic: topic_path,
-          messages: [message]
-        }
-
-        Google.Pubsub.V1.Publisher.Stub.publish(channel, request)
-      end
-
-      {:ok, {:ok, publish_response}} = Pool.execute(publish_operation, pool: pool_name)
+      {:ok, channel} = Pool.get_channel(pool_name)
+      message = %Google.Pubsub.V1.PubsubMessage{
+        data: message_data,
+        attributes: %{"source" => "grpc_connection_pool_test"}
+      }
+      request = %Google.Pubsub.V1.PublishRequest{
+        topic: topic_path,
+        messages: [message]
+      }
+      {:ok, publish_response} = Google.Pubsub.V1.Publisher.Stub.publish(channel, request)
       assert length(publish_response.message_ids) == 1
 
-      # Pull message
-      pull_operation = fn channel ->
-        request = %Google.Pubsub.V1.PullRequest{
-          subscription: subscription_path,
-          max_messages: 1
-        }
-
-        Google.Pubsub.V1.Subscriber.Stub.pull(channel, request)
-      end
-
-      # Sometimes need to retry pulling as message delivery is async
+      # Pull message - retry as message delivery is async
       {:ok, pull_response} =
         retry_until(
           fn ->
-            case Pool.execute(pull_operation, pool: pool_name) do
-              {:ok, {:ok, %{received_messages: []}}} -> :retry
-              {:ok, {:ok, response}} -> {:ok, response}
+            {:ok, channel} = Pool.get_channel(pool_name)
+            request = %Google.Pubsub.V1.PullRequest{
+              subscription: subscription_path,
+              max_messages: 1
+            }
+            case Google.Pubsub.V1.Subscriber.Stub.pull(channel, request) do
+              {:ok, %{received_messages: []}} -> :retry
+              {:ok, response} -> {:ok, response}
               error -> error
             end
           end, max_attempts: 5, delay: 100)
@@ -152,31 +141,22 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
       assert received_message.message.attributes["source"] == "grpc_connection_pool_test"
 
       # Acknowledge message
-      ack_operation = fn channel ->
-        request = %Google.Pubsub.V1.AcknowledgeRequest{
-          subscription: subscription_path,
-          ack_ids: [received_message.ack_id]
-        }
-
+      {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.AcknowledgeRequest{
+        subscription: subscription_path,
+        ack_ids: [received_message.ack_id]
+      }
+      assert {:ok, %Google.Protobuf.Empty{}} =
         Google.Pubsub.V1.Subscriber.Stub.acknowledge(channel, request)
-      end
-
-      assert {:ok, {:ok, %Google.Protobuf.Empty{}}} = Pool.execute(ack_operation, pool: pool_name)
 
       # Cleanup
-      delete_sub = fn channel ->
-        request = %Google.Pubsub.V1.DeleteSubscriptionRequest{subscription: subscription_path}
-        Google.Pubsub.V1.Subscriber.Stub.delete_subscription(channel, request)
-      end
+      {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.DeleteSubscriptionRequest{subscription: subscription_path}
+      Google.Pubsub.V1.Subscriber.Stub.delete_subscription(channel, request)
 
-      Pool.execute(delete_sub, pool: pool_name)
-
-      delete_topic = fn channel ->
-        request = %Google.Pubsub.V1.DeleteTopicRequest{topic: topic_path}
-        Google.Pubsub.V1.Publisher.Stub.delete_topic(channel, request)
-      end
-
-      Pool.execute(delete_topic, pool: pool_name)
+      {:ok, channel} = Pool.get_channel(pool_name)
+      request = %Google.Pubsub.V1.DeleteTopicRequest{topic: topic_path}
+      Google.Pubsub.V1.Publisher.Stub.delete_topic(channel, request)
     end
 
     test "handles connection pooling correctly", %{pool_name: pool_name} do
@@ -185,16 +165,12 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
         1..10
         |> Enum.map(fn i ->
           Task.async(fn ->
-            operation = fn channel ->
-              request = %Google.Pubsub.V1.ListTopicsRequest{
-                project: "projects/test-project"
-              }
-
-              result = Google.Pubsub.V1.Publisher.Stub.list_topics(channel, request)
-              {i, result}
-            end
-
-            Pool.execute(operation, pool: pool_name)
+            {:ok, channel} = Pool.get_channel(pool_name)
+            request = %Google.Pubsub.V1.ListTopicsRequest{
+              project: "projects/test-project"
+            }
+            result = Google.Pubsub.V1.Publisher.Stub.list_topics(channel, request)
+            {i, result}
           end)
         end)
 
@@ -202,7 +178,7 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
 
       # All operations should succeed
       assert Enum.all?(results, fn
-               {:ok, {_i, {:ok, %Google.Pubsub.V1.ListTopicsResponse{}}}} -> true
+               {_i, {:ok, %Google.Pubsub.V1.ListTopicsResponse{}}} -> true
                _ -> false
              end)
 
@@ -212,7 +188,7 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
   end
 
   # Helper function for retrying operations
-  defp retry_until(fun, opts \\ []) do
+  defp retry_until(fun, opts) do
     max_attempts = Keyword.get(opts, :max_attempts, 3)
     delay = Keyword.get(opts, :delay, 1000)
 
@@ -234,4 +210,26 @@ defmodule GrpcConnectionPool.PubSubEmulatorTest do
   end
 
   defp retry_until(_, 0, _), do: {:error, :max_retries_exceeded}
+
+  # Helper to wait for pool to have at least one connection
+  defp wait_for_connection(pool_name, timeout) do
+    start_time = System.monotonic_time(:millisecond)
+    wait_for_connection_loop(pool_name, start_time, timeout)
+  end
+
+  defp wait_for_connection_loop(pool_name, start_time, timeout) do
+    case Pool.get_channel(pool_name) do
+      {:ok, _channel} ->
+        :ok
+
+      {:error, :not_connected} ->
+        elapsed = System.monotonic_time(:millisecond) - start_time
+        if elapsed >= timeout do
+          {:error, :timeout}
+        else
+          :timer.sleep(100)
+          wait_for_connection_loop(pool_name, start_time, timeout)
+        end
+    end
+  end
 end

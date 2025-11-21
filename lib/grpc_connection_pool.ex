@@ -2,17 +2,18 @@ defmodule GrpcConnectionPool do
   @moduledoc """
   A flexible and robust gRPC connection pooling library for Elixir.
 
-  This library provides efficient connection pooling for gRPC clients using Poolex,
-  with features like automatic health monitoring, connection warming, and retry logic.
+  This library provides efficient connection pooling for gRPC clients with
+  automatic health monitoring, exponential backoff with jitter, and rich telemetry.
 
   ## Features
 
   - **Environment-agnostic**: Works with production, local, and custom gRPC endpoints
-  - **Connection warming**: Periodic pings to prevent idle timeouts
-  - **Health monitoring**: Automatic detection and recovery of failed connections
-  - **Retry logic**: Configurable exponential backoff for connection attempts
+  - **Round-robin distribution**: No checkout/checkin, channels returned directly
+  - **Health monitoring**: Registry-based real-time health tracking
+  - **Exponential backoff with jitter**: Prevents thundering herd on reconnection
+  - **Active disconnect detection**: Fast failure detection via adapter messages
   - **Multiple pools**: Support for multiple named connection pools
-  - **Metrics**: Built-in monitoring support via Poolex
+  - **Rich telemetry**: Comprehensive events for observability
 
   ## Quick Start
 
@@ -39,14 +40,15 @@ defmodule GrpcConnectionPool do
       {:ok, config} = GrpcConnectionPool.Config.local(port: 9090)
       {:ok, _pid} = GrpcConnectionPool.start_link(config)
 
-  ### 3. Execute operations
+  ### 3. Get a channel and use it
 
-      operation = fn channel ->
-        request = %MyService.ListRequest{}
-        MyService.Stub.list(channel, request)
+      case GrpcConnectionPool.get_channel() do
+        {:ok, channel} ->
+          request = %MyService.ListRequest{}
+          MyService.Stub.list(channel, request)
+        {:error, :not_connected} ->
+          {:error, :unavailable}
       end
-
-      {:ok, result} = GrpcConnectionPool.execute(operation)
 
   ## Configuration
 
@@ -92,8 +94,8 @@ defmodule GrpcConnectionPool do
       ]
 
       # Use specific pools
-      GrpcConnectionPool.execute(operation, pool: ServiceA.Pool)
-      GrpcConnectionPool.execute(operation, pool: ServiceB.Pool)
+      {:ok, channel_a} = GrpcConnectionPool.get_channel(ServiceA.Pool)
+      {:ok, channel_b} = GrpcConnectionPool.get_channel(ServiceB.Pool)
 
   ### Custom Credentials
 
@@ -123,11 +125,8 @@ defmodule GrpcConnectionPool do
 
       # Use in tests
       test "my grpc operation" do
-        operation = fn channel ->
-          # Your gRPC call
-        end
-        
-        assert {:ok, result} = GrpcConnectionPool.execute(operation, pool: TestPool)
+        assert {:ok, channel} = GrpcConnectionPool.get_channel(TestPool)
+        # Use channel for gRPC calls
       end
 
   """
@@ -163,21 +162,28 @@ defmodule GrpcConnectionPool do
   defdelegate child_spec(config), to: Pool
 
   @doc """
-  Executes a gRPC operation using a connection from the pool.
+  Gets a gRPC channel from the pool using round-robin distribution.
 
-  This is a convenience function that delegates to `GrpcConnectionPool.Pool.execute/2`.
+  Unlike traditional pools, this returns a channel directly without requiring
+  checkin. The channel can be used immediately for gRPC calls.
+
+  This is a convenience function that delegates to `GrpcConnectionPool.Pool.get_channel/1`.
 
   ## Examples
 
-      operation = fn channel ->
-        request = %MyService.ListRequest{}
-        MyService.Stub.list(channel, request)
+      case GrpcConnectionPool.get_channel() do
+        {:ok, channel} ->
+          request = %MyService.ListRequest{}
+          MyService.Stub.list(channel, request)
+        {:error, :not_connected} ->
+          {:error, :unavailable}
       end
 
-      {:ok, result} = GrpcConnectionPool.execute(operation)
+      # Use specific pool
+      {:ok, channel} = GrpcConnectionPool.get_channel(MyApp.CustomPool)
 
   """
-  defdelegate execute(operation_fn, opts \\ []), to: Pool
+  defdelegate get_channel(pool_name \\ Pool), to: Pool
 
   @doc """
   Gets pool status and statistics.

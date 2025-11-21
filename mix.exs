@@ -38,9 +38,9 @@ defmodule GrpcConnectionPool.MixProject do
 
   defp description do
     """
-    A flexible and robust gRPC connection pooling library for Elixir using Poolex.
+    A flexible and robust gRPC connection pooling library for Elixir.
     Features environment-agnostic configuration, connection warming, health monitoring,
-    and automatic retry logic with exponential backoff.
+    and automatic retry logic with exponential backoff and jitter.
     """
   end
 
@@ -75,8 +75,9 @@ defmodule GrpcConnectionPool.MixProject do
 
   defp deps do
     [
-      {:poolex, "~> 1.4.2"},
+      {:backoff, "~> 1.1"},
       {:grpc, "~> 0.11.5"},
+      {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
