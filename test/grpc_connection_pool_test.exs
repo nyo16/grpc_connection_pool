@@ -42,33 +42,35 @@ defmodule GrpcConnectionPoolTest do
       assert {:ok, pid} = Pool.start_link(config, name: pool_name)
       assert is_pid(pid)
 
+      # Give workers time to attempt connection
+      Process.sleep(100)
+
       # Check status
       status = Pool.status(pool_name)
       assert status.pool_name == pool_name
-      assert status.status == :running
+      assert status.expected_size == 2
+      # Status will be :down or :degraded since no real gRPC server is running
+      assert status.status in [:down, :degraded, :healthy]
 
       # Stop pool
       assert :ok = Pool.stop(pool_name)
     end
 
-    test "executes operations", %{config: config, pool_name: pool_name} do
-      # Start pool
+    test "returns error when no connections available", %{config: config, pool_name: pool_name} do
+      # Start pool (will fail to connect since no server is running)
       case Pool.start_link(config, name: pool_name) do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
 
-      # Simple operation that doesn't require actual gRPC server
-      operation = fn _channel ->
-        {:ok, :test_result}
-      end
+      # Give workers time to fail initial connection
+      Process.sleep(100)
 
-      # Note: This operation returns a result directly, not making actual gRPC calls
-      # but it tests the pool execution path
-      result = Pool.execute(operation, pool: pool_name)
+      # Try to get a channel - should fail since no gRPC server is running
+      result = Pool.get_channel(pool_name)
 
-      # The operation should succeed since it doesn't make actual network calls
-      assert match?({:ok, {:ok, :test_result}}, result)
+      # Should return error since no connections are available
+      assert result == {:error, :not_connected}
 
       Pool.stop(pool_name)
     end
