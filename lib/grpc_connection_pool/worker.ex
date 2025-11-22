@@ -290,6 +290,7 @@ defmodule GrpcConnectionPool.Worker do
     rescue
       _ -> :ok
     catch
+      :exit, _ -> :ok
       _ -> :ok
     end
   end
