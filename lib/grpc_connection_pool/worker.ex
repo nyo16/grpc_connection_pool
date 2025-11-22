@@ -286,12 +286,24 @@ defmodule GrpcConnectionPool.Worker do
     cancel_ping_timer(timer)
 
     try do
-      GRPC.Stub.disconnect(channel)
+      # Handle the FunctionClauseError in GRPC v0.11.5 during disconnect
+      case channel do
+        %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
+          # Manually close the Gun connection instead of using GRPC.Stub.disconnect
+          # to avoid the pattern matching issue in GRPC.Client.Connection.handle_call
+          if Process.alive?(pid) do
+            :gun.close(pid)
+          end
+        _ ->
+          # Fallback to standard disconnect for other connection types
+          GRPC.Stub.disconnect(channel)
+      end
     rescue
+      # Catch the specific FunctionClauseError and any other errors
+      FunctionClauseError -> :ok
       _ -> :ok
     catch
       :exit, _ -> :ok
-      _ -> :ok
     end
   end
 
