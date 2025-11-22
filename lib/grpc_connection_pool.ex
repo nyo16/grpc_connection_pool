@@ -206,4 +206,43 @@ defmodule GrpcConnectionPool do
 
   """
   defdelegate stop(pool_name \\ Pool), to: Pool
+
+  @doc """
+  Dynamically add workers to the pool.
+
+  ## Parameters
+  - `pool_name`: Pool name (default: Pool)
+  - `count`: Number of workers to add
+
+  ## Examples
+
+      {:ok, 10} = GrpcConnectionPool.scale_up(MyApp.Pool, 5)
+  """
+  defdelegate scale_up(pool_name \\ Pool, count), to: Pool
+
+  @doc """
+  Dynamically remove workers from the pool.
+
+  ## Parameters
+  - `pool_name`: Pool name (default: Pool)
+  - `count`: Number of workers to remove
+
+  ## Examples
+
+      {:ok, 7} = GrpcConnectionPool.scale_down(MyApp.Pool, 3)
+  """
+  defdelegate scale_down(pool_name \\ Pool, count), to: Pool
+
+  @doc """
+  Resize pool to exact size.
+
+  ## Parameters
+  - `pool_name`: Pool name (default: Pool)
+  - `target_size`: Desired pool size
+
+  ## Examples
+
+      {:ok, 15} = GrpcConnectionPool.resize(MyApp.Pool, 15)
+  """
+  defdelegate resize(pool_name \\ Pool, target_size), to: Pool
 end
