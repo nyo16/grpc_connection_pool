@@ -111,6 +111,27 @@ config :my_app, GrpcConnectionPool,
   ]
 
 # =============================================================================
+# Configuration with Interceptors
+# =============================================================================
+
+# Using gRPC client interceptors for logging, authentication, etc.
+config :my_app, GrpcConnectionPool,
+  endpoint: [
+    type: :production,
+    host: "api.example.com",
+    port: 443,
+    interceptors: [
+      MyApp.LoggingInterceptor,    # Log all requests/responses
+      MyApp.AuthInterceptor,        # Add authentication headers
+      MyApp.MetricsInterceptor      # Track metrics
+    ]
+  ],
+  pool: [
+    size: 10,
+    name: MyApp.GrpcPool
+  ]
+
+# =============================================================================
 # Environment-Specific Configuration
 # =============================================================================
 

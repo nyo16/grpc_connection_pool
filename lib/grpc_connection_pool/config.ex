@@ -14,6 +14,7 @@ defmodule GrpcConnectionPool.Config do
     - `:ssl` - SSL configuration (default: auto-configured based on type)
     - `:credentials` - Custom gRPC credentials
     - `:retry_config` - Retry configuration for connection failures
+    - `:interceptors` - List of gRPC client interceptors (modules implementing the interceptor behavior)
   - `:pool` - Pool configuration
     - `:size` - Number of connections in pool (default: 5)
     - `:name` - Pool name (default: auto-generated)
@@ -67,6 +68,17 @@ defmodule GrpcConnectionPool.Config do
         }
       }
 
+  ### Using Interceptors
+
+      config = %GrpcConnectionPool.Config{
+        endpoint: %{
+          type: :production,
+          host: "api.example.com",
+          port: 443,
+          interceptors: [MyApp.LoggingInterceptor, MyApp.AuthInterceptor]
+        }
+      }
+
   """
 
   @type endpoint_type :: atom()
@@ -77,7 +89,8 @@ defmodule GrpcConnectionPool.Config do
           port: pos_integer() | nil,
           ssl: keyword() | boolean() | nil,
           credentials: GRPC.Credential.t() | nil,
-          retry_config: retry_config() | nil
+          retry_config: retry_config() | nil,
+          interceptors: [module()] | nil
         }
 
   @type pool_config :: %{
@@ -113,7 +126,8 @@ defmodule GrpcConnectionPool.Config do
               port: nil,
               ssl: nil,
               credentials: nil,
-              retry_config: nil
+              retry_config: nil,
+              interceptors: nil
             },
             pool: %{
               size: 5,
@@ -278,7 +292,8 @@ defmodule GrpcConnectionPool.Config do
       port: opts[:port],
       ssl: opts[:ssl],
       credentials: opts[:credentials],
-      retry_config: build_retry_config(opts[:retry_config] || [])
+      retry_config: build_retry_config(opts[:retry_config] || []),
+      interceptors: opts[:interceptors]
     }
 
     validate_endpoint_config!(base)
@@ -329,7 +344,15 @@ defmodule GrpcConnectionPool.Config do
         true -> []
       end
 
-    base_opts ++ cred_opts
+    # Add interceptors if specified
+    interceptor_opts =
+      if endpoint.interceptors && length(endpoint.interceptors) > 0 do
+        [interceptors: endpoint.interceptors]
+      else
+        []
+      end
+
+    base_opts ++ cred_opts ++ interceptor_opts
   end
 
   defp validate_endpoint_config!(%{host: nil}),
