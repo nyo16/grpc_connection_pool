@@ -113,6 +113,7 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
     port: 443,                   # Required: gRPC server port  
     ssl: [],                     # SSL options ([] for default SSL)
     credentials: nil,            # Custom GRPC.Credential (overrides ssl)
+    interceptors: nil,           # List of gRPC client interceptors (modules)
     retry_config: [              # Optional: retry configuration
       max_attempts: 3,
       base_delay: 1000,
@@ -574,6 +575,35 @@ credentials = GRPC.Credential.new(ssl: [
   ]
 ])
 ```
+
+### Using gRPC Interceptors
+
+```elixir
+# Define interceptors for logging, authentication, metrics, etc.
+{:ok, config} = GrpcConnectionPool.Config.new([
+  endpoint: [
+    type: :production,
+    host: "api.example.com",
+    port: 443,
+    interceptors: [
+      MyApp.LoggingInterceptor,    # Log all requests/responses
+      MyApp.AuthInterceptor,        # Add authentication headers
+      MyApp.MetricsInterceptor      # Track metrics
+    ]
+  ],
+  pool: [size: 10]
+])
+
+# Interceptors are applied to all connections in the pool
+{:ok, _pid} = GrpcConnectionPool.start_link(config)
+```
+
+Interceptors are modules that implement the gRPC interceptor behavior and are applied to all gRPC calls made through channels from the pool. They can be used for:
+- Request/response logging
+- Authentication header injection
+- Metrics collection
+- Request/response transformation
+- Error handling and retry logic
 
 ## Environment-Specific Usage
 
