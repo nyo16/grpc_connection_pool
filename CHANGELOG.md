@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2025-01-29
+
+### Added
+- Enhanced telemetry events for better observability:
+  - `[:grpc_connection_pool, :pool, :init]` - Pool initialization with size and endpoint
+  - `[:grpc_connection_pool, :channel, :ping]` - Ping health check with duration and result
+  - `[:grpc_connection_pool, :channel, :gun_down]` - Gun connection down events with reason and protocol
+  - `[:grpc_connection_pool, :channel, :gun_error]` - Gun error events with reason
+  - `[:grpc_connection_pool, :channel, :reconnect_scheduled]` - Reconnection scheduling with delay and attempt count
+- Reconnect attempt tracking in worker state
+- Comprehensive telemetry documentation in README
+- Telemetry test suite
+
 ## [0.2.2] - 2025-01-29
 
 ### Added
