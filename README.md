@@ -689,6 +689,70 @@ status = GrpcConnectionPool.status(MyApp.UserService.Pool)
 # The pool will be automatically restarted by the supervisor if needed
 ```
 
+### Telemetry Events
+
+The library emits telemetry events for observability. Attach handlers to monitor pool and connection behavior.
+
+#### Pool Events
+
+| Event | Measurements | Metadata |
+|-------|--------------|----------|
+| `[:grpc_connection_pool, :pool, :init]` | `pool_size` | `pool_name`, `endpoint` |
+| `[:grpc_connection_pool, :pool, :get_channel]` | `duration` | `pool_name`, `available_channels` |
+| `[:grpc_connection_pool, :pool, :scale_up]` | `duration`, `requested`, `succeeded`, `failed`, `new_size` | `pool_name` |
+| `[:grpc_connection_pool, :pool, :scale_down]` | `duration`, `requested`, `terminated`, `new_size` | `pool_name` |
+| `[:grpc_connection_pool, :pool, :status]` | `expected_size`, `current_size` | `pool_name` |
+
+#### Channel Events
+
+| Event | Measurements | Metadata |
+|-------|--------------|----------|
+| `[:grpc_connection_pool, :channel, :connected]` | `duration` | `pool_name` |
+| `[:grpc_connection_pool, :channel, :connection_failed]` | `duration` | `pool_name`, `error` |
+| `[:grpc_connection_pool, :channel, :disconnected]` | `duration` | `pool_name`, `reason` |
+| `[:grpc_connection_pool, :channel, :ping]` | `duration` | `pool_name`, `result` (`:ok` or `:error`) |
+| `[:grpc_connection_pool, :channel, :gun_down]` | - | `pool_name`, `reason`, `protocol` |
+| `[:grpc_connection_pool, :channel, :gun_error]` | - | `pool_name`, `reason` |
+| `[:grpc_connection_pool, :channel, :reconnect_scheduled]` | `delay_ms`, `attempt` | `pool_name`, `reason` |
+
+#### Example: Attaching Telemetry Handlers
+
+```elixir
+# In your application startup
+:telemetry.attach_many(
+  "grpc-pool-handler",
+  [
+    [:grpc_connection_pool, :pool, :init],
+    [:grpc_connection_pool, :pool, :get_channel],
+    [:grpc_connection_pool, :channel, :connected],
+    [:grpc_connection_pool, :channel, :disconnected],
+    [:grpc_connection_pool, :channel, :reconnect_scheduled]
+  ],
+  &MyApp.Telemetry.handle_event/4,
+  nil
+)
+
+# Handler module
+defmodule MyApp.Telemetry do
+  require Logger
+
+  def handle_event([:grpc_connection_pool, :pool, :init], measurements, metadata, _config) do
+    Logger.info("Pool #{metadata.pool_name} initialized with #{measurements.pool_size} connections to #{metadata.endpoint}")
+  end
+
+  def handle_event([:grpc_connection_pool, :channel, :connected], measurements, metadata, _config) do
+    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+    Logger.debug("Channel connected for #{metadata.pool_name} in #{duration_ms}ms")
+  end
+
+  def handle_event([:grpc_connection_pool, :channel, :reconnect_scheduled], measurements, metadata, _config) do
+    Logger.warning("Reconnect scheduled for #{metadata.pool_name}: attempt #{measurements.attempt}, delay #{measurements.delay_ms}ms, reason: #{inspect(metadata.reason)}")
+  end
+
+  def handle_event(_event, _measurements, _metadata, _config), do: :ok
+end
+```
+
 ### Connection Health
 
 The library automatically monitors connection health and replaces dead connections. You can also check worker status:

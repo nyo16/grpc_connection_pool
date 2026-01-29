@@ -29,7 +29,8 @@ defmodule GrpcConnectionPool.Worker do
       :backoff_state,
       :registry_name,
       :pool_name,
-      :connection_start
+      :connection_start,
+      :reconnect_attempt
     ]
   end
 
@@ -89,7 +90,8 @@ defmodule GrpcConnectionPool.Worker do
       backoff_state: backoff_state,
       registry_name: registry_name,
       pool_name: pool_name,
-      connection_start: nil
+      connection_start: nil,
+      reconnect_attempt: 0
     }
 
     {:ok, state}
@@ -144,7 +146,8 @@ defmodule GrpcConnectionPool.Worker do
            | channel: channel,
              ping_timer: timer,
              backoff_state: new_backoff,
-             connection_start: now
+             connection_start: now,
+             reconnect_attempt: 0
          }}
 
       {:error, reason} ->
@@ -176,7 +179,16 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   def handle_info(:ping, %State{channel: channel} = state) do
-    case send_ping(channel) do
+    start_time = System.monotonic_time()
+    result = send_ping(channel)
+
+    :telemetry.execute(
+      [:grpc_connection_pool, :channel, :ping],
+      %{duration: System.monotonic_time() - start_time},
+      %{pool_name: state.pool_name, result: result}
+    )
+
+    case result do
       :ok ->
         timer = schedule_ping(state.config)
 
@@ -190,7 +202,13 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   # Active disconnect detection - Gun adapter
-  def handle_info({:gun_down, _conn_pid, _protocol, reason, _killed_streams}, state) do
+  def handle_info({:gun_down, _conn_pid, protocol, reason, _killed_streams}, state) do
+    :telemetry.execute(
+      [:grpc_connection_pool, :channel, :gun_down],
+      %{},
+      %{pool_name: state.pool_name, reason: reason, protocol: protocol}
+    )
+
     unless state.config.connection.suppress_connection_errors do
       Logger.debug(
         "gRPC connection closed by server for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
@@ -201,6 +219,12 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   def handle_info({:gun_error, _conn_pid, reason}, state) do
+    :telemetry.execute(
+      [:grpc_connection_pool, :channel, :gun_error],
+      %{},
+      %{pool_name: state.pool_name, reason: reason}
+    )
+
     unless state.config.connection.suppress_connection_errors do
       Logger.error(
         "Gun connection error for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
@@ -294,6 +318,7 @@ defmodule GrpcConnectionPool.Worker do
           if Process.alive?(pid) do
             :gun.close(pid)
           end
+
         _ ->
           # Fallback to standard disconnect for other connection types
           GRPC.Stub.disconnect(channel)
@@ -328,9 +353,18 @@ defmodule GrpcConnectionPool.Worker do
 
     # Schedule reconnect with backoff
     {delay, new_backoff} = Backoff.fail(state.backoff_state)
+    new_attempt = state.reconnect_attempt + 1
+
+    :telemetry.execute(
+      [:grpc_connection_pool, :channel, :reconnect_scheduled],
+      %{delay_ms: delay, attempt: new_attempt},
+      %{pool_name: state.pool_name, reason: reason}
+    )
+
     Logger.info(
       "Scheduling reconnection for pool #{inspect(state.pool_name)} in #{delay}ms after disconnect"
     )
+
     Process.send_after(self(), :connect, delay)
 
     # After attempting reconnection, we crash to let supervisor restart us
@@ -338,11 +372,13 @@ defmodule GrpcConnectionPool.Worker do
     Process.send_after(self(), :crash_after_reconnect_attempt, delay + 100)
 
     {:noreply,
-     %{state |
-       channel: nil,
-       ping_timer: nil,
-       backoff_state: new_backoff,
-       connection_start: nil
+     %{
+       state
+       | channel: nil,
+         ping_timer: nil,
+         backoff_state: new_backoff,
+         connection_start: nil,
+         reconnect_attempt: new_attempt
      }}
   end
 end

@@ -201,6 +201,7 @@ defmodule GrpcConnectionPool.Pool do
 
       # Get expected size from ETS
       ets_table = ets_table_name(pool_name)
+
       expected_size =
         case :ets.lookup(ets_table, :pool_size) do
           [{:pool_size, size}] -> size
@@ -294,31 +295,38 @@ defmodule GrpcConnectionPool.Pool do
           config = get_pool_config(pool_name)
 
           # Start new workers
-          results = for _i <- 1..count do
-            worker_spec = %{
-              id: Worker,
-              start: {Worker, :start_link, [[
-                config: config,
-                registry_name: registry_name,
-                pool_name: pool_name
-              ]]},
-              restart: :permanent,
-              shutdown: 5000  # Allow 5 seconds for graceful shutdown
-            }
+          results =
+            for _i <- 1..count do
+              worker_spec = %{
+                id: Worker,
+                start:
+                  {Worker, :start_link,
+                   [
+                     [
+                       config: config,
+                       registry_name: registry_name,
+                       pool_name: pool_name
+                     ]
+                   ]},
+                restart: :permanent,
+                # Allow 5 seconds for graceful shutdown
+                shutdown: 5000
+              }
 
-            DynamicSupervisor.start_child(supervisor_name, worker_spec)
-          end
+              DynamicSupervisor.start_child(supervisor_name, worker_spec)
+            end
 
           # Count successes and failures
           successes = Enum.count(results, &match?({:ok, _}, &1))
           failures = count - successes
 
           # Update pool size by actual number of workers added
-          new_size = if successes > 0 do
-            update_pool_size(pool_name, successes)
-          else
-            get_pool_size(ets_table)
-          end
+          new_size =
+            if successes > 0 do
+              update_pool_size(pool_name, successes)
+            else
+              get_pool_size(ets_table)
+            end
 
           # Emit telemetry
           :telemetry.execute(
@@ -399,19 +407,21 @@ defmodule GrpcConnectionPool.Pool do
                 workers_to_stop = Enum.take(children, count)
 
                 # Terminate the requested number of workers
-                terminated = Enum.reduce(workers_to_stop, 0, fn {_, pid, _, _}, acc ->
-                  case DynamicSupervisor.terminate_child(supervisor_name, pid) do
-                    :ok -> acc + 1
-                    {:error, :not_found} -> acc
-                  end
-                end)
+                terminated =
+                  Enum.reduce(workers_to_stop, 0, fn {_, pid, _, _}, acc ->
+                    case DynamicSupervisor.terminate_child(supervisor_name, pid) do
+                      :ok -> acc + 1
+                      {:error, :not_found} -> acc
+                    end
+                  end)
 
                 # Update ETS pool_size by actual number terminated
-                new_size = if terminated > 0 do
-                  update_pool_size(pool_name, -terminated)
-                else
-                  expected_size
-                end
+                new_size =
+                  if terminated > 0 do
+                    update_pool_size(pool_name, -terminated)
+                  else
+                    expected_size
+                  end
 
                 # Reset round-robin index to avoid pointing to non-existent workers
                 :ets.insert(ets_table, {:index, -1})
@@ -459,7 +469,8 @@ defmodule GrpcConnectionPool.Pool do
       {:ok, 10} = GrpcConnectionPool.Pool.resize(MyApp.Pool, 10)
   """
   @spec resize(atom(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def resize(pool_name \\ @default_pool_name, target_size) when is_integer(target_size) and target_size > 0 do
+  def resize(pool_name \\ @default_pool_name, target_size)
+      when is_integer(target_size) and target_size > 0 do
     ets_table = ets_table_name(pool_name)
 
     # Get expected size from ETS
@@ -503,15 +514,12 @@ defmodule GrpcConnectionPool.Pool do
       {Registry, name: registry_name, keys: :duplicate},
 
       # DynamicSupervisor for workers
-      {DynamicSupervisor,
-       name: :"#{pool_name}.DynamicSupervisor", strategy: :one_for_one},
+      {DynamicSupervisor, name: :"#{pool_name}.DynamicSupervisor", strategy: :one_for_one},
 
       # Task to start workers
       %{
         id: :worker_starter,
-        start:
-          {Task, :start_link,
-           [fn -> start_workers(pool_name, config, pool_size) end]},
+        start: {Task, :start_link, [fn -> start_workers(pool_name, config, pool_size) end]},
         restart: :temporary
       },
 
@@ -524,6 +532,14 @@ defmodule GrpcConnectionPool.Pool do
         restart: :permanent
       }
     ]
+
+    {host, port, _opts} = Config.get_endpoint(config)
+
+    :telemetry.execute(
+      [:grpc_connection_pool, :pool, :init],
+      %{pool_size: pool_size},
+      %{pool_name: pool_name, endpoint: "#{host}:#{port}"}
+    )
 
     Supervisor.init(children, strategy: :one_for_one)
   end
@@ -564,7 +580,8 @@ defmodule GrpcConnectionPool.Pool do
              ]
            ]},
         restart: :permanent,
-        shutdown: 5000  # Allow 5 seconds for graceful shutdown
+        # Allow 5 seconds for graceful shutdown
+        shutdown: 5000
       }
 
       DynamicSupervisor.start_child(supervisor_name, worker_spec)
