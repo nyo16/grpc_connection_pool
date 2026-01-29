@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.2.2"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -63,7 +63,7 @@ defmodule GrpcConnectionPool.MixProject do
       source_url: @source_url,
       extras: [
         "README.md": [title: "Overview"],
-        "LICENSE": [title: "License"]
+        LICENSE: [title: "License"]
       ],
       groups_for_modules: [
         Core: [GrpcConnectionPool, GrpcConnectionPool.Pool],
