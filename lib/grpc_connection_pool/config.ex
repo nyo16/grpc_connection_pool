@@ -350,7 +350,7 @@ defmodule GrpcConnectionPool.Config do
 
     # Add interceptors if specified
     interceptor_opts =
-      if endpoint.interceptors && length(endpoint.interceptors) > 0 do
+      if endpoint.interceptors != nil and endpoint.interceptors != [] do
         [interceptors: endpoint.interceptors]
       else
         []

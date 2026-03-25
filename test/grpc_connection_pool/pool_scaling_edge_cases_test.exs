@@ -90,8 +90,10 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       successes = Enum.filter(results, &match?({:ok, _}, &1))
       failures = Enum.filter(results, &match?({:error, :scaling_in_progress}, &1))
 
-      assert length(successes) >= 1
-      assert length(successes) + length(failures) == 5
+      success_count = Enum.count(successes)
+      failure_count = Enum.count(failures)
+      assert success_count >= 1
+      assert success_count + failure_count == 5
     end
 
     test "concurrent scale_up and scale_down", %{pool_name: pool_name} do
