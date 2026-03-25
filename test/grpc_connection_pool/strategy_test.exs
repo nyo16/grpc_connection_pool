@@ -2,7 +2,7 @@ defmodule GrpcConnectionPool.StrategyTest do
   use ExUnit.Case, async: true
 
   alias GrpcConnectionPool.Strategy
-  alias GrpcConnectionPool.Strategy.{RoundRobin, Random, PowerOfTwo}
+  alias GrpcConnectionPool.Strategy.{PowerOfTwo, Random, RoundRobin}
 
   describe "Strategy.resolve/1" do
     test "resolves :round_robin to module" do

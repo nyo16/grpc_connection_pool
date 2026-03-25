@@ -50,25 +50,30 @@ defmodule GrpcConnectionPool.PoolState do
   def release_slot(ets_table, pid) do
     case :ets.lookup(ets_table, :channel_slots) do
       [{:channel_slots, slots}] ->
-        case Map.pop(slots, pid) do
-          {nil, _} ->
-            :ok
-
-          {slot, new_slots} ->
-            :ets.insert(ets_table, {:channel_slots, new_slots})
-            :ets.delete(ets_table, {:channel, slot})
-
-            # Compact: move the highest-index channel down to fill the gap
-            channel_count = map_size(new_slots)
-
-            if slot < channel_count and channel_count > 0 do
-              compact_slots(ets_table, new_slots, slot, channel_count)
-            end
-
-            :ok
-        end
+        do_release_slot(ets_table, pid, slots)
 
       [] ->
+        :ok
+    end
+  end
+
+  defp do_release_slot(_ets_table, _pid, slots) when map_size(slots) == 0, do: :ok
+
+  defp do_release_slot(ets_table, pid, slots) do
+    case Map.pop(slots, pid) do
+      {nil, _} ->
+        :ok
+
+      {slot, new_slots} ->
+        :ets.insert(ets_table, {:channel_slots, new_slots})
+        :ets.delete(ets_table, {:channel, slot})
+
+        channel_count = map_size(new_slots)
+
+        if slot < channel_count and channel_count > 0 do
+          compact_slots(ets_table, new_slots, slot, channel_count)
+        end
+
         :ok
     end
   end

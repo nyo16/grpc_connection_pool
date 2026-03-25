@@ -9,7 +9,7 @@ defmodule GrpcConnectionPool.PoolScalingTest do
     {:ok, config} =
       GrpcConnectionPool.Config.local(
         host: "localhost",
-        port: 50051,
+        port: 50_051,
         pool_size: 5,
         pool_name: pool_name
       )

@@ -17,7 +17,7 @@ defmodule GrpcConnectionPool.Worker do
   use GenServer
   require Logger
 
-  alias GrpcConnectionPool.{Config, Backoff, PoolState}
+  alias GrpcConnectionPool.{Backoff, Config, PoolState}
 
   defmodule State do
     @moduledoc false
@@ -293,19 +293,17 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   defp send_ping(channel) do
-    try do
-      case channel do
-        %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
-          if Process.alive?(pid), do: :ok, else: :error
+    case channel do
+      %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
+        if Process.alive?(pid), do: :ok, else: :error
 
-        _ ->
-          :error
-      end
-    rescue
-      _ -> :error
-    catch
-      _ -> :error
+      _ ->
+        :error
     end
+  rescue
+    _ -> :error
+  catch
+    _ -> :error
   end
 
   defp schedule_ping(config) do

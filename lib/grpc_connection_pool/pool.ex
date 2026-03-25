@@ -33,7 +33,7 @@ defmodule GrpcConnectionPool.Pool do
 
   use Supervisor
 
-  alias GrpcConnectionPool.{Config, Worker, PoolState, Strategy}
+  alias GrpcConnectionPool.{Config, PoolState, Strategy, Worker}
 
   @default_pool_name __MODULE__
 
@@ -164,37 +164,35 @@ defmodule GrpcConnectionPool.Pool do
   """
   @spec status(atom()) :: map()
   def status(pool_name \\ @default_pool_name) do
-    try do
-      ets_table = ets_table_name(pool_name)
+    ets_table = ets_table_name(pool_name)
 
-      channel_count =
-        case :ets.lookup(ets_table, :channel_count) do
-          [{:channel_count, c}] -> c
-          [] -> 0
-        end
+    channel_count =
+      case :ets.lookup(ets_table, :channel_count) do
+        [{:channel_count, c}] -> c
+        [] -> 0
+      end
 
-      expected_size =
-        case :ets.lookup(ets_table, :pool_size) do
-          [{:pool_size, size}] -> size
-          [] -> 0
-        end
+    expected_size =
+      case :ets.lookup(ets_table, :pool_size) do
+        [{:pool_size, size}] -> size
+        [] -> 0
+      end
 
-      pool_status =
-        cond do
-          channel_count == 0 -> :down
-          channel_count < expected_size -> :degraded
-          true -> :healthy
-        end
+    pool_status =
+      cond do
+        channel_count == 0 -> :down
+        channel_count < expected_size -> :degraded
+        true -> :healthy
+      end
 
-      %{
-        pool_name: pool_name,
-        expected_size: expected_size,
-        current_size: channel_count,
-        status: pool_status
-      }
-    rescue
-      _ -> %{error: :pool_not_found}
-    end
+    %{
+      pool_name: pool_name,
+      expected_size: expected_size,
+      current_size: channel_count,
+      status: pool_status
+    }
+  rescue
+    _ -> %{error: :pool_not_found}
   end
 
   @doc """
@@ -314,8 +312,6 @@ defmodule GrpcConnectionPool.Pool do
   """
   @spec scale_down(atom(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
   def scale_down(pool_name \\ @default_pool_name, count) when is_integer(count) and count > 0 do
-    start_time = System.monotonic_time()
-    supervisor_name = :"#{pool_name}.DynamicSupervisor"
     ets_table = ets_table_name(pool_name)
 
     case acquire_scaling_lock(ets_table) do
@@ -324,65 +320,88 @@ defmodule GrpcConnectionPool.Pool do
 
       true ->
         try do
-          expected_size = get_pool_size(ets_table)
-
-          cond do
-            expected_size <= 1 ->
-              {:error, :would_empty_pool}
-
-            count >= expected_size ->
-              {:error, :would_empty_pool}
-
-            count <= 0 ->
-              {:error, :invalid_count}
-
-            true ->
-              children = get_all_children(supervisor_name, count)
-
-              if length(children) < count do
-                {:error, {:insufficient_workers, length(children)}}
-              else
-                workers_to_stop = Enum.take(children, count)
-
-                terminated =
-                  Enum.reduce(workers_to_stop, 0, fn {_, pid, _, _}, acc ->
-                    case DynamicSupervisor.terminate_child(supervisor_name, pid) do
-                      :ok -> acc + 1
-                      {:error, :not_found} -> acc
-                    end
-                  end)
-
-                new_size =
-                  if terminated > 0 do
-                    update_pool_size(ets_table, -terminated)
-                  else
-                    expected_size
-                  end
-
-                :telemetry.execute(
-                  [:grpc_connection_pool, :pool, :scale_down],
-                  %{
-                    duration: System.monotonic_time() - start_time,
-                    requested: count,
-                    terminated: terminated,
-                    new_size: new_size
-                  },
-                  %{pool_name: pool_name}
-                )
-
-                if terminated == count do
-                  {:ok, new_size}
-                else
-                  {:error, {:partial_termination, terminated, new_size}}
-                end
-              end
-          end
+          do_scale_down(pool_name, count, ets_table)
         after
           release_scaling_lock(ets_table)
         end
     end
   rescue
     e -> {:error, e}
+  end
+
+  defp do_scale_down(pool_name, count, ets_table) do
+    start_time = System.monotonic_time()
+    supervisor_name = :"#{pool_name}.DynamicSupervisor"
+    expected_size = get_pool_size(ets_table)
+
+    cond do
+      expected_size <= 1 ->
+        {:error, :would_empty_pool}
+
+      count >= expected_size ->
+        {:error, :would_empty_pool}
+
+      true ->
+        terminate_workers(supervisor_name, pool_name, count, expected_size, ets_table, start_time)
+    end
+  end
+
+  defp terminate_workers(supervisor_name, pool_name, count, expected_size, ets_table, start_time) do
+    children = get_all_children(supervisor_name, count)
+
+    if length(children) < count do
+      {:error, {:insufficient_workers, length(children)}}
+    else
+      do_terminate_workers(
+        supervisor_name,
+        pool_name,
+        count,
+        expected_size,
+        ets_table,
+        start_time
+      )
+    end
+  end
+
+  defp do_terminate_workers(
+         supervisor_name,
+         pool_name,
+         count,
+         expected_size,
+         ets_table,
+         start_time
+       ) do
+    children = get_all_children(supervisor_name, count)
+    workers_to_stop = Enum.take(children, count)
+
+    terminated = count_terminated(supervisor_name, workers_to_stop)
+
+    new_size =
+      if terminated > 0, do: update_pool_size(ets_table, -terminated), else: expected_size
+
+    :telemetry.execute(
+      [:grpc_connection_pool, :pool, :scale_down],
+      %{
+        duration: System.monotonic_time() - start_time,
+        requested: count,
+        terminated: terminated,
+        new_size: new_size
+      },
+      %{pool_name: pool_name}
+    )
+
+    if terminated == count,
+      do: {:ok, new_size},
+      else: {:error, {:partial_termination, terminated, new_size}}
+  end
+
+  defp count_terminated(supervisor_name, workers) do
+    Enum.reduce(workers, 0, fn {_, pid, _, _}, acc ->
+      case DynamicSupervisor.terminate_child(supervisor_name, pid) do
+        :ok -> acc + 1
+        {:error, :not_found} -> acc
+      end
+    end)
   end
 
   @doc """

@@ -168,17 +168,15 @@ defmodule GrpcConnectionPool.Config do
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, String.t()}
   def new(opts \\ []) do
-    try do
-      config = %__MODULE__{
-        endpoint: build_endpoint_config(opts[:endpoint] || []),
-        pool: build_pool_config(opts[:pool] || []),
-        connection: build_connection_config(opts[:connection] || [])
-      }
+    config = %__MODULE__{
+      endpoint: build_endpoint_config(opts[:endpoint] || []),
+      pool: build_pool_config(opts[:pool] || []),
+      connection: build_connection_config(opts[:connection] || [])
+    }
 
-      {:ok, config}
-    rescue
-      error -> {:error, "Invalid configuration: #{Exception.message(error)}"}
-    end
+    {:ok, config}
+  rescue
+    error -> {:error, "Invalid configuration: #{Exception.message(error)}"}
   end
 
   @doc """

@@ -1,8 +1,8 @@
 defmodule GrpcConnectionPool.WorkerTest do
   use ExUnit.Case, async: false
 
-  alias GrpcConnectionPool.Worker
   alias GrpcConnectionPool.Config
+  alias GrpcConnectionPool.Worker
 
   describe "Worker termination with GRPC v0.11.5 disconnect fix" do
     setup do
