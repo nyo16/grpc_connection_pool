@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-24
+
+### Added
+- **Zero GenServer.call hot path** — channels stored directly in ETS for O(1) indexed access, eliminating the GenServer.call bottleneck on every `get_channel` request
+- **Pluggable connection strategies** via `GrpcConnectionPool.Strategy` behaviour:
+  - `:round_robin` (default) — lock-free atomics-based round-robin
+  - `:random` — random selection, good for avoiding hot-spotting
+  - `:power_of_two` — power-of-two-choices with least-recently-used tiebreak
+  - Custom strategies supported via behaviour implementation
+- **`:persistent_term` for pool config** — zero-copy reads for configuration data
+- **ETS with read/write concurrency** — optimized concurrent access flags
+- **`PoolState` GenServer** — dedicated ETS table owner for crash resilience
+- **`TelemetryReporter` GenServer** — replaced recursive `:timer.sleep` telemetry loop with a proper GenServer using `Process.send_after`
+- **`await_ready/2`** — blocks until at least one channel is connected or timeout, useful for application startup
+- **Stale scaling lock detection** — scaling locks older than 30 seconds are automatically released
+- **`max_reconnect_attempts` config** — workers crash after N consecutive connection failures instead of the fragile `crash_after_reconnect_attempt` timer
+- **Benchee benchmarks** — `bench/get_channel_bench.exs` for measuring hot path performance
+- **Strategy tests** — comprehensive tests for all three built-in strategies
+- **CI/CD pipeline** — GitHub Actions with compile, format, credo, test, dialyzer, and auto-publish to Hex on tag push
+
+### Changed
+- **4.3x–5.8x faster `get_channel`** — single-process throughput improved from ~470K ips to ~2M ips
+- **O(n) scaling eliminated** — pool_size=25 was 38% slower than pool_size=5, now only 2% slower
+- **44–58% lower latency under concurrency** — 100 concurrent callers: median 553μs → 312μs, p99 1035μs → 439μs
+- **28–56% less memory per call** — memory now constant regardless of pool size (was O(n))
+- **Pool.status 2.5x faster** — reads from ETS channel_count instead of Registry.lookup
+- Pool supervision tree restructured: PoolState starts first, then Registry, DynamicSupervisor, workers, and TelemetryReporter
+
+### Removed
+- `crash_after_reconnect_attempt` message — replaced by `max_reconnect_attempts` config with clean `{:stop, reason, state}` on exhaustion
+
 ## [0.2.3] - 2025-01-29
 
 ### Added

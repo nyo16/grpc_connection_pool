@@ -6,12 +6,13 @@ defmodule GrpcConnectionPool.PoolScalingTest do
     # Use unique pool name for each test
     pool_name = :"ScalingTest.#{:erlang.unique_integer()}"
 
-    {:ok, config} = GrpcConnectionPool.Config.local(
-      host: "localhost",
-      port: 50051,
-      pool_size: 5,
-      pool_name: pool_name
-    )
+    {:ok, config} =
+      GrpcConnectionPool.Config.local(
+        host: "localhost",
+        port: 50_051,
+        pool_size: 5,
+        pool_name: pool_name
+      )
 
     {:ok, _pid} = Pool.start_link(config, name: pool_name)
 
@@ -21,8 +22,11 @@ defmodule GrpcConnectionPool.PoolScalingTest do
 
       # Force kill the supervisor if normal stop fails
       supervisor_name = :"#{pool_name}.Supervisor"
+
       case Process.whereis(supervisor_name) do
-        nil -> :ok
+        nil ->
+          :ok
+
         pid ->
           Process.exit(pid, :kill)
           Process.sleep(10)
@@ -78,6 +82,7 @@ defmodule GrpcConnectionPool.PoolScalingTest do
   test "concurrent scaling operations are prevented", %{pool_name: pool_name} do
     # Start a long-running scale up in a separate process
     parent = self()
+
     spawn(fn ->
       # This will hold the lock
       result = Pool.scale_up(pool_name, 10)

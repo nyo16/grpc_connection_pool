@@ -245,4 +245,17 @@ defmodule GrpcConnectionPool do
       {:ok, 15} = GrpcConnectionPool.resize(MyApp.Pool, 15)
   """
   defdelegate resize(pool_name \\ Pool, target_size), to: Pool
+
+  @doc """
+  Blocks until at least one channel is connected or timeout is reached.
+
+  ## Parameters
+  - `pool_name`: Pool name (default: Pool)
+  - `timeout`: Max wait in milliseconds (default: 10_000)
+
+  ## Examples
+
+      :ok = GrpcConnectionPool.await_ready(MyApp.Pool, 5_000)
+  """
+  defdelegate await_ready(pool_name \\ Pool, timeout \\ 10_000), to: Pool
 end

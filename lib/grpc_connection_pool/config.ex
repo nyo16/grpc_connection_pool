@@ -96,7 +96,8 @@ defmodule GrpcConnectionPool.Config do
   @type pool_config :: %{
           size: pos_integer(),
           name: atom() | nil,
-          telemetry_interval: pos_integer()
+          telemetry_interval: pos_integer(),
+          strategy: atom()
         }
 
   @type connection_config :: %{
@@ -105,7 +106,8 @@ defmodule GrpcConnectionPool.Config do
           ping_interval: pos_integer() | nil,
           suppress_connection_errors: boolean(),
           backoff_min: pos_integer(),
-          backoff_max: pos_integer()
+          backoff_max: pos_integer(),
+          max_reconnect_attempts: pos_integer()
         }
 
   @type retry_config :: %{
@@ -132,7 +134,8 @@ defmodule GrpcConnectionPool.Config do
             pool: %{
               size: 5,
               name: nil,
-              telemetry_interval: 5_000
+              telemetry_interval: 5_000,
+              strategy: :round_robin
             },
             connection: %{
               keepalive: 30_000,
@@ -140,7 +143,8 @@ defmodule GrpcConnectionPool.Config do
               ping_interval: 25_000,
               suppress_connection_errors: false,
               backoff_min: 1_000,
-              backoff_max: 30_000
+              backoff_max: 30_000,
+              max_reconnect_attempts: 5
             }
 
   @doc """
@@ -164,17 +168,15 @@ defmodule GrpcConnectionPool.Config do
   """
   @spec new(keyword()) :: {:ok, t()} | {:error, String.t()}
   def new(opts \\ []) do
-    try do
-      config = %__MODULE__{
-        endpoint: build_endpoint_config(opts[:endpoint] || []),
-        pool: build_pool_config(opts[:pool] || []),
-        connection: build_connection_config(opts[:connection] || [])
-      }
+    config = %__MODULE__{
+      endpoint: build_endpoint_config(opts[:endpoint] || []),
+      pool: build_pool_config(opts[:pool] || []),
+      connection: build_connection_config(opts[:connection] || [])
+    }
 
-      {:ok, config}
-    rescue
-      error -> {:error, "Invalid configuration: #{Exception.message(error)}"}
-    end
+    {:ok, config}
+  rescue
+    error -> {:error, "Invalid configuration: #{Exception.message(error)}"}
   end
 
   @doc """
@@ -304,7 +306,8 @@ defmodule GrpcConnectionPool.Config do
     %{
       size: opts[:size] || 5,
       name: opts[:name],
-      telemetry_interval: opts[:telemetry_interval] || 5_000
+      telemetry_interval: opts[:telemetry_interval] || 5_000,
+      strategy: opts[:strategy] || :round_robin
     }
   end
 
@@ -315,7 +318,8 @@ defmodule GrpcConnectionPool.Config do
       ping_interval: opts[:ping_interval] || 25_000,
       suppress_connection_errors: opts[:suppress_connection_errors] || false,
       backoff_min: opts[:backoff_min] || 1_000,
-      backoff_max: opts[:backoff_max] || 30_000
+      backoff_max: opts[:backoff_max] || 30_000,
+      max_reconnect_attempts: opts[:max_reconnect_attempts] || 5
     }
   end
 
@@ -346,7 +350,7 @@ defmodule GrpcConnectionPool.Config do
 
     # Add interceptors if specified
     interceptor_opts =
-      if endpoint.interceptors && length(endpoint.interceptors) > 0 do
+      if endpoint.interceptors != nil and endpoint.interceptors != [] do
         [interceptors: endpoint.interceptors]
       else
         []

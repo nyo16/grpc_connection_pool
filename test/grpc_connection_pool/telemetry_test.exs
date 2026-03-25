@@ -53,7 +53,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
           host: "localhost",
           port: 9999,
           pool_size: 1,
-          connection: [ping_interval: 100]
+          connection: [ping_interval: 100, max_reconnect_attempts: 50]
         )
 
       on_exit(fn ->
@@ -193,7 +193,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
       assert is_integer(measurements.delay_ms)
       assert measurements.delay_ms > 0
-      assert measurements.attempt == 1
+      assert measurements.attempt >= 1
       assert metadata.pool_name == pool_name
       assert metadata.reason == {:gun_down, :closed}
 
@@ -201,7 +201,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
       GenServer.stop(worker_pid)
     end
 
-    @tag timeout: 20_000
+    @tag timeout: 30_000
     test "reconnect_attempt increments on successive disconnects", %{
       config: config,
       registry_name: registry_name,
@@ -236,10 +236,16 @@ defmodule GrpcConnectionPool.TelemetryTest do
                       measurements1, _metadata},
                      2000
 
-      assert measurements1.attempt == 1
+      # Attempt count depends on how many connection failures occurred before
+      # the disconnect. The important thing is it increments.
+      first_attempt = measurements1.attempt
+      assert first_attempt >= 1
 
-      # Allow some time for state update
-      Process.sleep(100)
+      # Wait for the reconnect attempt to fire and the connection to timeout.
+      # The backoff delay (~1-3s) + connect timeout (~5s) means we need to wait
+      # until the worker is idle again. We verify by calling status (GenServer.call
+      # will only return when the worker is not blocked in handle_info).
+      wait_for_worker_idle(worker_pid, 15_000)
 
       # Second disconnect
       send(worker_pid, {:gun_error, make_ref(), :timeout})
@@ -248,7 +254,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
                       measurements2, _metadata},
                      2000
 
-      assert measurements2.attempt == 2
+      assert measurements2.attempt == first_attempt + 1
 
       :telemetry.detach(handler_id)
       GenServer.stop(worker_pid)
@@ -375,5 +381,17 @@ defmodule GrpcConnectionPool.TelemetryTest do
       assert Map.has_key?(init_metadata, :endpoint)
       assert is_binary(init_metadata.endpoint)
     end
+  end
+
+  # Waits until the worker GenServer is idle (not blocked in a synchronous
+  # handle_info like GRPC.Stub.connect). A GenServer.call will only return
+  # once the worker has finished processing the current message.
+  defp wait_for_worker_idle(pid, timeout) do
+    task =
+      Task.async(fn ->
+        Worker.status(pid)
+      end)
+
+    Task.await(task, timeout)
   end
 end

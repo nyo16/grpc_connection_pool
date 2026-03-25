@@ -6,12 +6,13 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
     # Use unique pool name for each test
     pool_name = :"EdgeCaseTest.#{:erlang.unique_integer()}"
 
-    {:ok, config} = GrpcConnectionPool.Config.local(
-      host: "localhost",
-      port: 50051,
-      pool_size: 10,
-      pool_name: pool_name
-    )
+    {:ok, config} =
+      GrpcConnectionPool.Config.local(
+        host: "localhost",
+        port: 50_051,
+        pool_size: 10,
+        pool_name: pool_name
+      )
 
     {:ok, _pid} = Pool.start_link(config, name: pool_name)
 
@@ -21,8 +22,11 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
 
       # Force kill the supervisor if normal stop fails
       supervisor_name = :"#{pool_name}.Supervisor"
+
       case Process.whereis(supervisor_name) do
-        nil -> :ok
+        nil ->
+          :ok
+
         pid ->
           Process.exit(pid, :kill)
           Process.sleep(10)
@@ -70,13 +74,14 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       parent = self()
 
       # Start 5 concurrent scale_up operations
-      tasks = for i <- 1..5 do
-        Task.async(fn ->
-          result = Pool.scale_up(pool_name, i)
-          send(parent, {:scale_up_result, i, result})
-          result
-        end)
-      end
+      tasks =
+        for i <- 1..5 do
+          Task.async(fn ->
+            result = Pool.scale_up(pool_name, i)
+            send(parent, {:scale_up_result, i, result})
+            result
+          end)
+        end
 
       # Wait for all to complete
       results = Task.await_many(tasks, 5000)
@@ -85,28 +90,32 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       successes = Enum.filter(results, &match?({:ok, _}, &1))
       failures = Enum.filter(results, &match?({:error, :scaling_in_progress}, &1))
 
-      assert length(successes) >= 1
-      assert length(successes) + length(failures) == 5
+      success_count = Enum.count(successes)
+      failure_count = Enum.count(failures)
+      assert success_count >= 1
+      assert success_count + failure_count == 5
     end
 
     test "concurrent scale_up and scale_down", %{pool_name: pool_name} do
       parent = self()
 
       # Start concurrent operations
-      task1 = Task.async(fn ->
-        # Add small delay inside the task to ensure both start nearly simultaneously
-        Process.sleep(1)
-        result = Pool.scale_up(pool_name, 5)
-        send(parent, {:scale_up, result})
-        result
-      end)
+      task1 =
+        Task.async(fn ->
+          # Add small delay inside the task to ensure both start nearly simultaneously
+          Process.sleep(1)
+          result = Pool.scale_up(pool_name, 5)
+          send(parent, {:scale_up, result})
+          result
+        end)
 
-      task2 = Task.async(fn ->
-        # Start immediately
-        result = Pool.scale_down(pool_name, 3)
-        send(parent, {:scale_down, result})
-        result
-      end)
+      task2 =
+        Task.async(fn ->
+          # Start immediately
+          result = Pool.scale_down(pool_name, 3)
+          send(parent, {:scale_down, result})
+          result
+        end)
 
       results = Task.await_many([task1, task2], 5000)
 
@@ -116,7 +125,8 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       # If both succeeded, the operations happened sequentially
       # If one failed, it means the lock worked
       case results do
-        [{:ok, _}, {:ok, _}] -> :ok  # Both succeeded sequentially
+        # Both succeeded sequentially
+        [{:ok, _}, {:ok, _}] -> :ok
         _ -> assert Enum.any?(results, &match?({:error, :scaling_in_progress}, &1))
       end
     end
@@ -205,14 +215,15 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       {:ok, _} = Pool.scale_down(pool_name, 5)
 
       # Try getting multiple channels - should work with round-robin
-      channels = for _ <- 1..20 do
-        Pool.get_channel(pool_name)
-      end
+      channels =
+        for _ <- 1..20 do
+          Pool.get_channel(pool_name)
+        end
 
       # All should succeed or be :not_connected (if workers haven't connected yet)
       assert Enum.all?(channels, fn result ->
-        match?({:ok, _}, result) or result == {:error, :not_connected}
-      end)
+               match?({:ok, _}, result) or result == {:error, :not_connected}
+             end)
     end
 
     test "round-robin works correctly after scale up", %{pool_name: pool_name} do
@@ -223,9 +234,10 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       Process.sleep(200)
 
       # Try getting multiple channels
-      channels = for _ <- 1..30 do
-        Pool.get_channel(pool_name)
-      end
+      channels =
+        for _ <- 1..30 do
+          Pool.get_channel(pool_name)
+        end
 
       # At least some should succeed (workers might not all be connected yet)
       successes = Enum.count(channels, &match?({:ok, _}, &1))
@@ -258,7 +270,10 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       {:ok, _} = Pool.scale_up(pool_name, 5)
 
       # Check for scale_up telemetry
-      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :scale_up], measurements, metadata}, 1000
+      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :scale_up], measurements,
+                      metadata},
+                     1000
+
       assert measurements.succeeded == 5
       assert measurements.requested == 5
       assert metadata.pool_name == pool_name
@@ -266,7 +281,10 @@ defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
       {:ok, _} = Pool.scale_down(pool_name, 3)
 
       # Check for scale_down telemetry
-      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :scale_down], measurements, metadata}, 1000
+      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :scale_down], measurements,
+                      metadata},
+                     1000
+
       assert measurements.terminated == 3
       assert measurements.requested == 3
       assert metadata.pool_name == pool_name
