@@ -33,7 +33,7 @@ defmodule GrpcConnectionPool.Pool do
 
   use Supervisor
 
-  alias GrpcConnectionPool.{Config, PoolState, Strategy, Worker}
+  alias GrpcConnectionPool.{Config, PoolState, Worker}
 
   @default_pool_name __MODULE__
 
