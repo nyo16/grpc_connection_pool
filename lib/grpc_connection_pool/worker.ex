@@ -1,23 +1,23 @@
 defmodule GrpcConnectionPool.Worker do
   @moduledoc """
-  GenServer-based gRPC connection worker with automatic reconnection and backoff.
+  GenServer-based gRPC connection worker with automatic reconnection.
 
-  This worker manages a single gRPC connection with the following features:
-  - Automatic connection creation with exponential backoff and jitter
-  - Active disconnect detection (handles gun_down/gun_error messages)
-  - Self-registration in Registry for pool health tracking
+  Each worker manages a single gRPC connection and stores its channel
+  directly in the pool's ETS table for zero-GenServer-call access from
+  `Pool.get_channel/1`.
+
+  Features:
+  - Channels stored in ETS for O(1) pool access (no GenServer.call in hot path)
+  - Automatic reconnection with exponential backoff and jitter
+  - Active disconnect detection (gun_down/gun_error messages)
+  - Self-registration in Registry for health tracking
   - Optional periodic ping to keep connections warm
-  - Telemetry events for observability
-  - Graceful reconnection on failures
-
-  Unlike the previous Poolex-based implementation, workers actively detect
-  disconnections and trigger reconnection with backoff before crashing. This
-  allows the supervisor to only handle truly fatal errors.
+  - Configurable max reconnect attempts before crash
   """
   use GenServer
   require Logger
 
-  alias GrpcConnectionPool.{Config, Backoff}
+  alias GrpcConnectionPool.{Config, Backoff, PoolState}
 
   defmodule State do
     @moduledoc false
@@ -29,20 +29,22 @@ defmodule GrpcConnectionPool.Worker do
       :backoff_state,
       :registry_name,
       :pool_name,
+      :ets_table,
       :connection_start,
-      :reconnect_attempt
+      :reconnect_attempt,
+      :slot_index
     ]
   end
 
   # Public API
 
   @doc """
-  Starts a connection worker with the given configuration.
+  Starts a connection worker.
 
   Options:
-  - `:config` - GrpcConnectionPool.Config struct (required)
-  - `:registry_name` - Registry name for self-registration (required)
-  - `:pool_name` - Pool name for telemetry (required)
+  - `:config` — GrpcConnectionPool.Config struct (required)
+  - `:registry_name` — Registry name for self-registration (required)
+  - `:pool_name` — Pool name for telemetry (required)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -72,6 +74,7 @@ defmodule GrpcConnectionPool.Worker do
     config = Keyword.fetch!(opts, :config)
     registry_name = Keyword.fetch!(opts, :registry_name)
     pool_name = Keyword.fetch!(opts, :pool_name)
+    ets_table = GrpcConnectionPool.Pool.ets_table_name(pool_name)
 
     backoff_state =
       Backoff.new(
@@ -79,7 +82,6 @@ defmodule GrpcConnectionPool.Worker do
         max: config.connection.backoff_max
       )
 
-    # Start connection process asynchronously
     send(self(), :connect)
 
     state = %State{
@@ -90,8 +92,10 @@ defmodule GrpcConnectionPool.Worker do
       backoff_state: backoff_state,
       registry_name: registry_name,
       pool_name: pool_name,
+      ets_table: ets_table,
       connection_start: nil,
-      reconnect_attempt: 0
+      reconnect_attempt: 0,
+      slot_index: nil
     }
 
     {:ok, state}
@@ -110,7 +114,7 @@ defmodule GrpcConnectionPool.Worker do
     {:reply, :disconnected, state}
   end
 
-  def handle_call(:status, _from, %State{channel: _channel} = state) do
+  def handle_call(:status, _from, state) do
     {:reply, :connected, state}
   end
 
@@ -124,8 +128,19 @@ defmodule GrpcConnectionPool.Worker do
 
         Logger.debug("gRPC connection established for pool #{inspect(state.pool_name)}")
 
-        # Register in Registry to mark as healthy
+        # Register in Registry for health tracking
         Registry.register(state.registry_name, :channels, nil)
+
+        # Store channel in ETS for zero-GenServer-call access
+        slot =
+          try do
+            s = PoolState.claim_slot(state.ets_table, self())
+            :ets.insert(state.ets_table, {{:channel, s}, channel, now})
+            :ets.update_counter(state.ets_table, :channel_count, {2, 1}, {:channel_count, 0})
+            s
+          rescue
+            ArgumentError -> nil
+          end
 
         # Emit telemetry
         :telemetry.execute(
@@ -147,7 +162,8 @@ defmodule GrpcConnectionPool.Worker do
              ping_timer: timer,
              backoff_state: new_backoff,
              connection_start: now,
-             reconnect_attempt: 0
+             reconnect_attempt: 0,
+             slot_index: slot
          }}
 
       {:error, reason} ->
@@ -157,19 +173,32 @@ defmodule GrpcConnectionPool.Worker do
           "Failed to create gRPC connection for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
         )
 
-        # Emit telemetry
         :telemetry.execute(
           [:grpc_connection_pool, :channel, :connection_failed],
           %{duration: now - start_time},
           %{pool_name: state.pool_name, error: reason}
         )
 
-        # Schedule reconnect with backoff
-        {delay, new_backoff} = Backoff.fail(state.backoff_state)
-        Logger.info("Retrying connection in #{delay}ms...")
-        Process.send_after(self(), :connect, delay)
+        new_attempt = state.reconnect_attempt + 1
+        max_attempts = state.config.connection.max_reconnect_attempts
 
-        {:noreply, %State{state | backoff_state: new_backoff}}
+        if new_attempt >= max_attempts do
+          Logger.warning(
+            "Max reconnect attempts (#{max_attempts}) reached for pool #{inspect(state.pool_name)}, crashing"
+          )
+
+          {:stop, {:max_reconnect_attempts, max_attempts}, state}
+        else
+          {delay, new_backoff} = Backoff.fail(state.backoff_state)
+
+          Logger.info(
+            "Retrying connection in #{delay}ms (attempt #{new_attempt}/#{max_attempts})..."
+          )
+
+          Process.send_after(self(), :connect, delay)
+
+          {:noreply, %State{state | backoff_state: new_backoff, reconnect_attempt: new_attempt}}
+        end
     end
   end
 
@@ -201,7 +230,7 @@ defmodule GrpcConnectionPool.Worker do
     end
   end
 
-  # Active disconnect detection - Gun adapter
+  # Active disconnect detection — Gun adapter
   def handle_info({:gun_down, _conn_pid, protocol, reason, _killed_streams}, state) do
     :telemetry.execute(
       [:grpc_connection_pool, :channel, :gun_down],
@@ -239,7 +268,7 @@ defmodule GrpcConnectionPool.Worker do
     {:noreply, state}
   end
 
-  # Active disconnect detection - Mint adapter
+  # Active disconnect detection — Mint adapter
   def handle_info({:elixir_grpc, :connection_down, _pid}, state) do
     Logger.debug("Mint gRPC connection down for pool #{inspect(state.pool_name)}")
     handle_disconnect(state, :mint_connection_down)
@@ -249,17 +278,9 @@ defmodule GrpcConnectionPool.Worker do
     {:noreply, state}
   end
 
-  def handle_info(:crash_after_reconnect_attempt, state) do
-    # If we still don't have a connection, crash to let supervisor restart us
-    if state.channel == nil do
-      {:stop, :normal, state}
-    else
-      {:noreply, state}
-    end
-  end
-
   @impl GenServer
   def terminate(_reason, state) do
+    remove_channel_from_ets(state)
     cleanup_connection(state)
     :ok
   end
@@ -273,7 +294,6 @@ defmodule GrpcConnectionPool.Worker do
 
   defp send_ping(channel) do
     try do
-      # Lightweight health check - just check if process is alive
       case channel do
         %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
           if Process.alive?(pid), do: :ok, else: :error
@@ -310,21 +330,16 @@ defmodule GrpcConnectionPool.Worker do
     cancel_ping_timer(timer)
 
     try do
-      # Handle the FunctionClauseError in GRPC v0.11.5 during disconnect
       case channel do
         %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
-          # Manually close the Gun connection instead of using GRPC.Stub.disconnect
-          # to avoid the pattern matching issue in GRPC.Client.Connection.handle_call
           if Process.alive?(pid) do
             :gun.close(pid)
           end
 
         _ ->
-          # Fallback to standard disconnect for other connection types
           GRPC.Stub.disconnect(channel)
       end
     rescue
-      # Catch the specific FunctionClauseError and any other errors
       FunctionClauseError -> :ok
       _ -> :ok
     catch
@@ -332,12 +347,30 @@ defmodule GrpcConnectionPool.Worker do
     end
   end
 
+  defp remove_channel_from_ets(%State{slot_index: nil}), do: :ok
+
+  defp remove_channel_from_ets(%State{ets_table: ets_table} = state) do
+    try do
+      PoolState.release_slot(ets_table, self())
+      :ets.update_counter(ets_table, :channel_count, {2, -1, 0, 0})
+    rescue
+      _ -> :ok
+    end
+
+    # Unregister from Registry
+    try do
+      Registry.unregister(state.registry_name, :channels)
+    rescue
+      _ -> :ok
+    end
+  end
+
   # Unified disconnect handling
   defp handle_disconnect(%State{} = state, reason) do
     now = System.monotonic_time()
 
-    # Unregister from Registry
-    Registry.unregister(state.registry_name, :channels)
+    # Remove channel from ETS and Registry
+    remove_channel_from_ets(state)
 
     # Emit telemetry
     duration = if state.connection_start, do: now - state.connection_start, else: 0
@@ -367,18 +400,15 @@ defmodule GrpcConnectionPool.Worker do
 
     Process.send_after(self(), :connect, delay)
 
-    # After attempting reconnection, we crash to let supervisor restart us
-    # This is the "traditional" model where supervisor handles restarts
-    Process.send_after(self(), :crash_after_reconnect_attempt, delay + 100)
-
     {:noreply,
-     %{
+     %State{
        state
        | channel: nil,
          ping_timer: nil,
          backoff_state: new_backoff,
          connection_start: nil,
-         reconnect_attempt: new_attempt
+         reconnect_attempt: new_attempt,
+         slot_index: nil
      }}
   end
 end

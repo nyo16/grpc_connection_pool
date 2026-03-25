@@ -17,14 +17,19 @@ defmodule GrpcConnectionPool.WorkerTest do
           pid when is_pid(pid) ->
             Process.unlink(pid)
             Process.exit(pid, :kill)
-          _ -> :ok
+
+          _ ->
+            :ok
         end
       end)
 
       %{config: config, registry_name: registry_name}
     end
 
-    test "Worker handles termination with Gun connection gracefully", %{config: config, registry_name: registry_name} do
+    test "Worker handles termination with Gun connection gracefully", %{
+      config: config,
+      registry_name: registry_name
+    } do
       # Start worker
       worker_opts = [
         config: config,
@@ -44,7 +49,10 @@ defmodule GrpcConnectionPool.WorkerTest do
       refute Process.alive?(worker_pid)
     end
 
-    test "Worker handles Gun disconnect messages properly", %{config: config, registry_name: registry_name} do
+    test "Worker handles Gun disconnect messages properly", %{
+      config: config,
+      registry_name: registry_name
+    } do
       # Start worker
       worker_opts = [
         config: config,
@@ -76,7 +84,10 @@ defmodule GrpcConnectionPool.WorkerTest do
       GenServer.stop(worker_pid)
     end
 
-    test "Worker handles Mint disconnect messages properly", %{config: config, registry_name: registry_name} do
+    test "Worker handles Mint disconnect messages properly", %{
+      config: config,
+      registry_name: registry_name
+    } do
       # Start worker
       worker_opts = [
         config: config,
@@ -113,14 +124,19 @@ defmodule GrpcConnectionPool.WorkerTest do
           pid when is_pid(pid) ->
             Process.unlink(pid)
             Process.exit(pid, :kill)
-          _ -> :ok
+
+          _ ->
+            :ok
         end
       end)
 
       %{config: config, registry_name: registry_name}
     end
 
-    test "Worker survives FunctionClauseError during GRPC operations", %{config: config, registry_name: registry_name} do
+    test "Worker survives FunctionClauseError during GRPC operations", %{
+      config: config,
+      registry_name: registry_name
+    } do
       # Start worker that will encounter connection issues
       worker_opts = [
         config: config,
@@ -147,7 +163,10 @@ defmodule GrpcConnectionPool.WorkerTest do
       GenServer.stop(worker_pid)
     end
 
-    test "Worker handles rapid Gun connection state changes", %{config: config, registry_name: registry_name} do
+    test "Worker handles rapid Gun connection state changes", %{
+      config: config,
+      registry_name: registry_name
+    } do
       worker_opts = [
         config: config,
         registry_name: registry_name,
@@ -181,6 +200,7 @@ defmodule GrpcConnectionPool.WorkerTest do
       GenServer.stop(worker_pid)
     end
 
+    @tag timeout: 20_000
     test "Worker cleanup is idempotent", %{config: config, registry_name: registry_name} do
       # Test that worker can be terminated gracefully multiple times
       worker_opts = [
@@ -190,10 +210,12 @@ defmodule GrpcConnectionPool.WorkerTest do
       ]
 
       {:ok, worker_pid} = Worker.start_link(worker_opts)
-      Process.sleep(100)
+
+      # Wait for connection attempt to timeout (GRPC connect ~5s)
+      Process.sleep(6000)
 
       # First termination should work
-      GenServer.stop(worker_pid, :normal, 1000)
+      GenServer.stop(worker_pid, :normal, 5000)
 
       # Worker should be dead
       refute Process.alive?(worker_pid)
@@ -206,18 +228,19 @@ defmodule GrpcConnectionPool.WorkerTest do
       # This test ensures the fix uses the correct Gun API
 
       # Create a dummy process to test Gun close
-      test_pid = spawn(fn ->
-        receive do
-          :stop -> :ok
-        end
-      end)
+      test_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
 
       # This should not raise an error (Gun API compatibility check)
       try do
         result = :gun.close(test_pid)
         # Gun close can return various results, we just want to ensure it doesn't crash
         assert result in [:ok, {:error, :not_connected}, {:error, :closed}] ||
-               is_tuple(result) || is_atom(result)
+                 is_tuple(result) || is_atom(result)
       catch
         # If Gun is not available, that's fine for this test
         :error, :undef -> :ok
@@ -241,6 +264,7 @@ defmodule GrpcConnectionPool.WorkerTest do
         %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
           assert is_pid(pid)
           assert pid == self()
+
         _ ->
           flunk("Pattern matching failed for Gun channel structure")
       end
@@ -257,6 +281,7 @@ defmodule GrpcConnectionPool.WorkerTest do
       case mint_channel do
         %GRPC.Channel{adapter_payload: %{conn_pid: _pid}} ->
           flunk("Should not match Gun pattern for Mint channel")
+
         _ ->
           # This is expected - fallback to standard disconnect
           assert true
@@ -265,21 +290,23 @@ defmodule GrpcConnectionPool.WorkerTest do
 
     test "FunctionClauseError handling works correctly" do
       # Test that our rescue block catches FunctionClauseError
-      result = try do
-        # Simulate a function that raises FunctionClauseError
-        # Note: In Elixir 1.19+, raise/2 with FunctionClauseError might behave differently
-        error = %FunctionClauseError{
-          module: GRPC.Client.Connection,
-          function: :handle_call,
-          arity: 3
-        }
-        raise error
-      rescue
-        FunctionClauseError -> :caught_function_clause_error
-        _ -> :caught_other_error
-      catch
-        :exit, _ -> :caught_exit
-      end
+      result =
+        try do
+          # Simulate a function that raises FunctionClauseError
+          # Note: In Elixir 1.19+, raise/2 with FunctionClauseError might behave differently
+          error = %FunctionClauseError{
+            module: GRPC.Client.Connection,
+            function: :handle_call,
+            arity: 3
+          }
+
+          raise error
+        rescue
+          FunctionClauseError -> :caught_function_clause_error
+          _ -> :caught_other_error
+        catch
+          :exit, _ -> :caught_exit
+        end
 
       assert result == :caught_function_clause_error
     end

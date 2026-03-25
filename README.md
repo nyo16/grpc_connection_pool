@@ -4,51 +4,62 @@
 [![Documentation](https://img.shields.io/badge/docs-hexdocs-purple.svg)](https://hexdocs.pm/grpc_connection_pool/)
 [![License](https://img.shields.io/hexpm/l/grpc_connection_pool.svg)](LICENSE)
 
-A flexible and robust gRPC connection pooling library for Elixir, providing efficient connection management with automatic health monitoring, connection warming, and environment-agnostic configuration.
+A high-performance gRPC connection pooling library for Elixir with zero-GenServer-call hot path, pluggable selection strategies, and automatic health monitoring.
 
 ## Overview
 
-GrpcConnectionPool was extracted from a production Pub/Sub gRPC client to provide a generic, reusable solution for any Elixir application that needs reliable gRPC connection pooling. It's built on top of [Poolex](https://github.com/general-CbIC/poolex) for modern, efficient worker pool management.
+GrpcConnectionPool was extracted from a production Pub/Sub gRPC client and optimized for maximum throughput. The hot path (`get_channel`) does **zero GenServer calls** — channels are stored in ETS for O(1) indexed access with lock-free atomics-based round-robin.
 
 ### Key Features
 
-- 🌐 **Environment-agnostic**: Works seamlessly with production, local development, and test environments
-- 🔄 **Health monitoring**: Automatic connection health checks and recovery
-- 🔥 **Connection warming**: Periodic pings to prevent idle connection timeouts
-- 🔁 **Retry logic**: Configurable exponential backoff for connection failures
-- 🏗️ **Multiple pools**: Support for multiple named pools serving different gRPC services
-- ⚙️ **Flexible configuration**: Configure via code, environment variables, or config files
-- 🧪 **Production tested**: Fully tested with real gRPC services including Google Pub/Sub emulator
+- **Zero GenServer.call hot path** — 2M+ ops/sec single-process throughput
+- **Pluggable strategies** — round-robin (atomics), random, power-of-two-choices, or custom
+- **O(1) channel selection** — constant time regardless of pool size
+- **`:persistent_term` config** — zero-copy reads for configuration
+- **Health monitoring** — automatic connection health checks and recovery
+- **Connection warming** — periodic pings to prevent idle connection timeouts
+- **Exponential backoff** — configurable retry with jitter
+- **Multiple pools** — support for multiple named pools serving different services
+- **Dynamic scaling** — `scale_up/2`, `scale_down/2`, `resize/2` at runtime
+- **`await_ready/2`** — block until pool has connections, useful for startup
+- **Rich telemetry** — comprehensive events for observability
 
-## Why This Architecture?
+## Architecture
+
+```
+Pool.Supervisor (one_for_one)
++-- PoolState (GenServer -- owns ETS, persistent_term setup)
++-- Registry (health tracking)
++-- DynamicSupervisor --> Workers
++-- WorkerStarter (Task, temporary)
++-- TelemetryReporter (GenServer, periodic status)
+```
+
+### Hot Path
+
+```
+Pool.get_channel()
+  -> ETS.lookup(:channel_count)            # O(1)
+  -> persistent_term.get(strategy)         # O(1), zero-copy
+  -> Strategy.select (atomics.add_get)     # O(1), lock-free
+  -> ETS.lookup({:channel, index})         # O(1)
+  -> return channel                        # no GenServer!
+```
 
 ### Design Decisions
 
-We chose this architecture after learning from production experience with gRPC connection pooling:
+1. **Custom pool over NimblePool** — "no checkout" model where channels are returned directly. No checkout/checkin overhead.
 
-1. **Poolex over NimblePool**: While NimblePool is excellent, Poolex offers more modern features and better monitoring capabilities that are essential for production gRPC services.
+2. **ETS + atomics over GenServer.call** — Workers store channels in ETS on connect/disconnect. The hot path reads ETS directly with zero message passing.
 
-2. **GenServer Workers**: Each connection is managed by a dedicated GenServer that handles:
-   - Connection lifecycle management
-   - Health monitoring with periodic pings
-   - Automatic reconnection with exponential backoff
-   - Connection warming to prevent timeouts
-
-3. **Environment-Agnostic Configuration**: Real applications need to work across development (local gRPC servers), testing (emulators), and production (secure cloud services) environments seamlessly.
+3. **Pluggable strategies** — Different workloads need different selection. Round-robin is default, but random avoids correlated hot-spotting and power-of-two handles uneven loads.
 
 4. **Separation of Concerns**:
-   - `Config`: Pure configuration management
-   - `Worker`: Connection lifecycle and health
-   - `Pool`: Poolex integration and operation execution
-   - `GrpcConnectionPool`: Clean public API
-
-### Benefits Over Direct gRPC Usage
-
-- **Reduced latency**: Pre-warmed connections eliminate cold start delays
-- **Improved reliability**: Automatic reconnection and health monitoring
-- **Resource efficiency**: Connection reuse and proper cleanup
-- **Scalability**: Multiple pools for different services
-- **Operational visibility**: Built-in monitoring and metrics
+   - `Config`: Configuration management with strategy support
+   - `Worker`: Connection lifecycle, stores channels in ETS
+   - `Pool`: Zero-GenServer hot path, strategy dispatch
+   - `PoolState`: ETS ownership, persistent_term setup
+   - `Strategy`: Behaviour for pluggable selection
 
 ## Installation
 
@@ -57,8 +68,8 @@ Add `grpc_connection_pool` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:grpc_connection_pool, "~> 0.1.0"},
-    {:grpc, "~> 0.10.2"}  # Required peer dependency
+    {:grpc_connection_pool, "~> 0.3.0"},
+    {:grpc, "~> 0.11.5"}  # Required peer dependency
   ]
 end
 ```
@@ -123,7 +134,7 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
   pool: [
     size: 5,                     # Number of connections in pool
     name: MyApp.GrpcPool,        # Pool name (must be unique)
-    checkout_timeout: 15_000     # Timeout for getting connections
+    strategy: :round_robin       # :round_robin | :random | :power_of_two | CustomModule
   ],
   connection: [
     keepalive: 30_000,           # HTTP/2 keepalive interval
@@ -837,6 +848,69 @@ defmodule MyApp.GrpcTest do
 end
 ```
 
+## Connection Strategies
+
+The pool supports pluggable channel selection strategies via the `GrpcConnectionPool.Strategy` behaviour.
+
+### Built-in Strategies
+
+| Strategy | Config | Description | Best For |
+|----------|--------|-------------|----------|
+| **Round Robin** | `:round_robin` | Lock-free atomics counter, cycles through channels sequentially | General use (default) |
+| **Random** | `:random` | Random channel selection via `:rand.uniform` | Avoiding correlated hot-spotting |
+| **Power of Two** | `:power_of_two` | Pick 2 random channels, choose least-recently-used | Uneven workloads |
+
+### Configuring a Strategy
+
+```elixir
+{:ok, config} = GrpcConnectionPool.Config.new(
+  endpoint: [host: "api.example.com", port: 443],
+  pool: [size: 10, strategy: :random]
+)
+```
+
+### Custom Strategies
+
+Implement the `GrpcConnectionPool.Strategy` behaviour:
+
+```elixir
+defmodule MyApp.WeightedStrategy do
+  @behaviour GrpcConnectionPool.Strategy
+
+  @impl true
+  def init(_pool_name, _pool_size) do
+    # Return any state — stored in :persistent_term
+    %{weights: [0.5, 0.3, 0.2]}
+  end
+
+  @impl true
+  def select(state, channel_count, _ets_table) do
+    # Must return {:ok, index} where 0 <= index < channel_count
+    {:ok, weighted_random(state.weights, channel_count)}
+  end
+
+  defp weighted_random(_weights, count), do: :rand.uniform(count) - 1
+end
+```
+
+Then use it:
+
+```elixir
+config = GrpcConnectionPool.Config.new(
+  pool: [strategy: MyApp.WeightedStrategy]
+)
+```
+
+### Strategy Performance
+
+Benchmarked with pool_size=10:
+
+| Strategy | Throughput | Avg Latency | Memory/call |
+|----------|-----------|-------------|-------------|
+| round_robin | 1.91M ips | 522 ns | 0.72 KB |
+| random | 1.87M ips | 534 ns | 1.05 KB |
+| power_of_two | 1.08M ips | 925 ns | 2.05 KB |
+
 ## Performance Considerations
 
 ### Pool Sizing
@@ -912,7 +986,7 @@ config :my_app, GrpcConnectionPool,
   ]
 ```
 
-The worker processes will still crash gracefully and be replaced by Poolex as designed.
+The worker processes will still reconnect with backoff and the pool will automatically recover.
 
 ## Contributing
 
@@ -940,7 +1014,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Built on top of [Poolex](https://github.com/general-CbIC/poolex) for excellent pool management
 - Inspired by production requirements from Google Cloud Pub/Sub integration
 - Thanks to the Elixir gRPC community for the solid foundation
 

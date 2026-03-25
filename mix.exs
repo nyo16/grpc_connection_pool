@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.2.3"
+  @version "0.3.0"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -14,7 +14,12 @@ defmodule GrpcConnectionPool.MixProject do
       docs: docs(),
       package: package(),
       description: description(),
-      test_coverage: [tool: ExCoveralls]
+      source_url: @source_url,
+      test_coverage: [tool: ExCoveralls],
+      dialyzer: [
+        plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
+        plt_add_apps: [:mix, :ex_unit]
+      ]
     ]
   end
 
@@ -51,7 +56,8 @@ defmodule GrpcConnectionPool.MixProject do
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
-        "Documentation" => "https://hexdocs.pm/grpc_connection_pool"
+        "Documentation" => "https://hexdocs.pm/grpc_connection_pool",
+        "Changelog" => "#{@source_url}/blob/master/CHANGELOG.md"
       },
       maintainers: ["Niko Maroulis"]
     ]
@@ -61,14 +67,26 @@ defmodule GrpcConnectionPool.MixProject do
     [
       main: "GrpcConnectionPool",
       source_url: @source_url,
+      source_ref: "v#{@version}",
       extras: [
         "README.md": [title: "Overview"],
+        "CHANGELOG.md": [title: "Changelog"],
         LICENSE: [title: "License"]
       ],
       groups_for_modules: [
         Core: [GrpcConnectionPool, GrpcConnectionPool.Pool],
         Configuration: [GrpcConnectionPool.Config],
-        Internal: [GrpcConnectionPool.Worker]
+        Strategies: [
+          GrpcConnectionPool.Strategy,
+          GrpcConnectionPool.Strategy.RoundRobin,
+          GrpcConnectionPool.Strategy.Random,
+          GrpcConnectionPool.Strategy.PowerOfTwo
+        ],
+        Internal: [
+          GrpcConnectionPool.Worker,
+          GrpcConnectionPool.PoolState,
+          GrpcConnectionPool.Backoff
+        ]
       ]
     ]
   end
@@ -80,6 +98,7 @@ defmodule GrpcConnectionPool.MixProject do
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
+      {:benchee, "~> 1.0", only: :dev},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       # Optional for authentcating with GCP
