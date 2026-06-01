@@ -17,13 +17,17 @@ defmodule GrpcConnectionPool.PoolState do
   > restart; workers re-populate it as they reconnect. (A real heir would
   > require a separate long-lived owner process.)
 
-  The ETS table stores:
+  The ETS table holds only data the hot path (or other processes) read:
   - `{:channel, index}` — `{channel, last_used_at}` for O(1) indexed access
   - `:channel_count` — number of connected channels
   - `:pool_size` — expected pool size
   - `:config` — pool configuration (also stored in :persistent_term)
-  - `:channel_slots` — maps worker PIDs to their slot indices
   - `:scaling_lock` — lock for scaling operations
+
+  The `pid => slot_index` map is **not** in ETS — `get_channel/1` never reads
+  it, so it lives in this GenServer's state. Keeping it out of ETS avoids
+  copying the whole map in and out on every connect/disconnect, and since slots
+  are kept contiguous, claiming a slot is O(1) (`map_size`).
   """
 
   use GenServer
@@ -84,36 +88,40 @@ defmodule GrpcConnectionPool.PoolState do
     :ets.insert(table, {:channel_count, 0})
     :ets.insert(table, {:pool_size, pool_size})
     :ets.insert(table, {:config, config})
-    :ets.insert(table, {:channel_slots, %{}})
 
     # Store config and strategy in persistent_term for zero-copy reads
     strategy_mod = GrpcConnectionPool.Strategy.resolve(config.pool.strategy)
     strategy_state = strategy_mod.init(pool_name, pool_size)
 
     :persistent_term.put({GrpcConnectionPool.Pool, pool_name, :config}, config)
-    :persistent_term.put({GrpcConnectionPool.Pool, pool_name, :strategy_mod}, strategy_mod)
-    :persistent_term.put({GrpcConnectionPool.Pool, pool_name, :strategy_state}, strategy_state)
-    :persistent_term.put({GrpcConnectionPool.Pool, pool_name, :ets_table}, ets_table)
 
-    {:ok, %{pool_name: pool_name, ets_table: table}}
+    # Single combined term read once per get_channel/1 (hot path): collapses
+    # two persistent_term lookups + the per-call ets table-name atom rebuild
+    # into one lookup. Also carries the telemetry sample rate so the hot path
+    # needs no extra read to decide whether to emit.
+    :persistent_term.put(
+      {GrpcConnectionPool.Pool, pool_name, :strategy},
+      {strategy_mod, strategy_state, ets_table, config.pool.telemetry_sample_rate}
+    )
+
+    {:ok, %{pool_name: pool_name, ets_table: table, slots: %{}}}
   end
 
   @impl GenServer
-  def handle_call({:register_channel, pid, channel}, _from, state) do
+  def handle_call({:register_channel, pid, channel}, _from, %{slots: slots} = state) do
     ets = state.ets_table
-    slots = current_slots(ets)
 
     case Map.get(slots, pid) do
       nil ->
-        used = MapSet.new(Map.values(slots))
-        slot = find_free_slot(used, 0)
+        # Slots are kept contiguous (0..count-1), so the next free slot is
+        # simply the current size — O(1), no scan.
+        slot = map_size(slots)
         new_slots = Map.put(slots, pid, slot)
 
-        :ets.insert(ets, {:channel_slots, new_slots})
         :ets.insert(ets, {{:channel, slot}, channel, System.monotonic_time()})
         :ets.update_counter(ets, :channel_count, {2, 1}, {:channel_count, 0})
 
-        {:reply, {:ok, slot}, state}
+        {:reply, {:ok, slot}, %{state | slots: new_slots}}
 
       existing_slot ->
         # Worker re-registering (e.g. reconnect without releasing): refresh
@@ -124,27 +132,28 @@ defmodule GrpcConnectionPool.PoolState do
     end
   end
 
-  def handle_call({:unregister_channel, pid}, _from, state) do
+  def handle_call({:unregister_channel, pid}, _from, %{slots: slots} = state) do
     ets = state.ets_table
-    slots = current_slots(ets)
 
     case Map.pop(slots, pid) do
       {nil, _} ->
         {:reply, :ok, state}
 
-      {slot, new_slots} ->
-        :ets.insert(ets, {:channel_slots, new_slots})
+      {slot, slots_without} ->
         :ets.delete(ets, {:channel, slot})
         new_count = :ets.update_counter(ets, :channel_count, {2, -1, 0, 0})
 
         # Keep the slot array contiguous: if a non-final slot was freed,
         # move the highest-indexed channel (at slot == new_count) into the
         # gap so indices stay 0..new_count-1.
-        if slot < new_count do
-          compact_slots(ets, new_slots, slot, new_count)
-        end
+        new_slots =
+          if slot < new_count do
+            compact_slots(ets, slots_without, slot, new_count)
+          else
+            slots_without
+          end
 
-        {:reply, :ok, state}
+        {:reply, :ok, %{state | slots: new_slots}}
     end
   end
 
@@ -153,7 +162,7 @@ defmodule GrpcConnectionPool.PoolState do
     pool_name = state.pool_name
 
     # Clean up persistent_term entries
-    for key <- [:config, :strategy_mod, :strategy_state, :ets_table] do
+    for key <- [:config, :strategy] do
       :persistent_term.erase({GrpcConnectionPool.Pool, pool_name, key})
     end
 
@@ -162,43 +171,26 @@ defmodule GrpcConnectionPool.PoolState do
 
   # Private helpers
 
-  defp current_slots(ets_table) do
-    case :ets.lookup(ets_table, :channel_slots) do
-      [{:channel_slots, slots}] -> slots
-      [] -> %{}
-    end
-  end
-
-  defp find_free_slot(used, candidate) do
-    if MapSet.member?(used, candidate) do
-      find_free_slot(used, candidate + 1)
-    else
-      candidate
-    end
-  end
-
+  # Moves the highest-indexed channel into the freed gap so slot indices stay
+  # contiguous (0..count-1). Returns the updated pid => slot map.
   defp compact_slots(ets_table, slots, gap_slot, channel_count) do
-    # Find the worker that has the highest slot index
-    # This was the count before removal, so highest = count
+    # After the decrement, the highest occupied slot index equals channel_count.
     highest_slot = channel_count
 
     case Enum.find(slots, fn {_pid, s} -> s == highest_slot end) do
       {pid, ^highest_slot} ->
-        # Move this channel from highest_slot to gap_slot
         case :ets.lookup(ets_table, {:channel, highest_slot}) do
           [{_, channel, last_used}] ->
             :ets.insert(ets_table, {{:channel, gap_slot}, channel, last_used})
             :ets.delete(ets_table, {:channel, highest_slot})
-
-            new_slots = Map.put(slots, pid, gap_slot)
-            :ets.insert(ets_table, {:channel_slots, new_slots})
+            Map.put(slots, pid, gap_slot)
 
           [] ->
-            :ok
+            slots
         end
 
       nil ->
-        :ok
+        slots
     end
   end
 end

@@ -49,10 +49,6 @@ defmodule BenchHelper do
 
     :ets.insert(ets_table, {:channel_count, size})
 
-    # Also populate channel_slots so the data is consistent
-    slots = Map.new(0..(size - 1), fn i -> {self(), i} end)
-    :ets.insert(ets_table, {:channel_slots, slots})
-
     pool_name
   end
 
