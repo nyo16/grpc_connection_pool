@@ -91,7 +91,9 @@ defmodule GrpcConnectionPool.Pool do
   def start_link(config_opts, opts) when is_list(config_opts) do
     case Config.new(config_opts) do
       {:ok, config} ->
-        pool_name = opts[:name] || get_pool_name(config, config_opts) || @default_pool_name
+        # get_pool_name/2 already falls back to @default_pool_name, so no
+        # further `|| @default_pool_name` is needed here.
+        pool_name = opts[:name] || get_pool_name(config, config_opts)
         Supervisor.start_link(__MODULE__, {config, pool_name}, name: :"#{pool_name}.Supervisor")
 
       {:error, reason} ->
@@ -145,6 +147,11 @@ defmodule GrpcConnectionPool.Pool do
       _ ->
         {:error, :not_connected}
     end
+  rescue
+    # ETS table absent (pool not started / PoolState restarting) or the
+    # strategy persistent_term key missing → behave as "no connection"
+    # rather than raising into the caller.
+    ArgumentError -> {:error, :not_connected}
   end
 
   @doc """

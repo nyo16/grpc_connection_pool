@@ -52,14 +52,6 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   @doc """
-  Gets the current gRPC channel if connected.
-  """
-  @spec get_channel(pid()) :: {:ok, GRPC.Channel.t()} | {:error, :not_connected}
-  def get_channel(worker) do
-    GenServer.call(worker, :get_channel)
-  end
-
-  @doc """
   Gets the current connection status.
   """
   @spec status(pid()) :: :connected | :disconnected
@@ -102,14 +94,6 @@ defmodule GrpcConnectionPool.Worker do
   end
 
   @impl GenServer
-  def handle_call(:get_channel, _from, %State{channel: nil} = state) do
-    {:reply, {:error, :not_connected}, state}
-  end
-
-  def handle_call(:get_channel, _from, %State{channel: channel} = state) do
-    {:reply, {:ok, channel}, state}
-  end
-
   def handle_call(:status, _from, %State{channel: nil} = state) do
     {:reply, :disconnected, state}
   end
@@ -131,15 +115,16 @@ defmodule GrpcConnectionPool.Worker do
         # Register in Registry for health tracking
         Registry.register(state.registry_name, :channels, nil)
 
-        # Store channel in ETS for zero-GenServer-call access
+        # Register the channel via PoolState (serialized): claims a slot,
+        # inserts the channel into ETS, and bumps :channel_count atomically.
         slot =
           try do
-            s = PoolState.claim_slot(state.ets_table, self())
-            :ets.insert(state.ets_table, {{:channel, s}, channel, now})
-            :ets.update_counter(state.ets_table, :channel_count, {2, 1}, {:channel_count, 0})
+            {:ok, s} = PoolState.register_channel(state.pool_name, self(), channel)
             s
           rescue
             ArgumentError -> nil
+          catch
+            :exit, _ -> nil
           end
 
         # Emit telemetry
@@ -347,12 +332,15 @@ defmodule GrpcConnectionPool.Worker do
 
   defp remove_channel_from_ets(%State{slot_index: nil}), do: :ok
 
-  defp remove_channel_from_ets(%State{ets_table: ets_table} = state) do
+  defp remove_channel_from_ets(%State{pool_name: pool_name} = state) do
+    # Release the slot via PoolState (serialized): removes the channel,
+    # compacts the slot array, and decrements :channel_count atomically.
     try do
-      PoolState.release_slot(ets_table, self())
-      :ets.update_counter(ets_table, :channel_count, {2, -1, 0, 0})
+      PoolState.unregister_channel(pool_name, self())
     rescue
-      _ -> :ok
+      ArgumentError -> :ok
+    catch
+      :exit, _ -> :ok
     end
 
     # Unregister from Registry
