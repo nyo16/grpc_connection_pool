@@ -6,7 +6,7 @@
 #
 # Run: mix run bench/get_channel_bench.exs
 
-alias GrpcConnectionPool.{Config, Pool, PoolState}
+alias GrpcConnectionPool.{Config, Pool}
 
 # Suppress noisy logs during benchmarking
 Logger.configure(level: :warning)
