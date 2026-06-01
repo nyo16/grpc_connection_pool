@@ -91,7 +91,9 @@ defmodule GrpcConnectionPool.Pool do
   def start_link(config_opts, opts) when is_list(config_opts) do
     case Config.new(config_opts) do
       {:ok, config} ->
-        pool_name = opts[:name] || get_pool_name(config, config_opts) || @default_pool_name
+        # get_pool_name/2 already falls back to @default_pool_name, so no
+        # further `|| @default_pool_name` is needed here.
+        pool_name = opts[:name] || get_pool_name(config, config_opts)
         Supervisor.start_link(__MODULE__, {config, pool_name}, name: :"#{pool_name}.Supervisor")
 
       {:error, reason} ->
@@ -119,23 +121,16 @@ defmodule GrpcConnectionPool.Pool do
   """
   @spec get_channel(atom()) :: {:ok, GRPC.Channel.t()} | {:error, :not_connected}
   def get_channel(pool_name \\ @default_pool_name) do
-    ets_table = ets_table_name(pool_name)
+    {strategy_mod, strategy_state, ets_table, sample_rate} =
+      :persistent_term.get({__MODULE__, pool_name, :strategy})
 
     case :ets.lookup(ets_table, :channel_count) do
       [{:channel_count, count}] when count > 0 ->
-        strategy_mod = :persistent_term.get({__MODULE__, pool_name, :strategy_mod})
-        strategy_state = :persistent_term.get({__MODULE__, pool_name, :strategy_state})
-
         {:ok, index} = strategy_mod.select(strategy_state, count, ets_table)
 
         case :ets.lookup(ets_table, {:channel, index}) do
           [{{:channel, _}, channel, _last_used}] ->
-            :telemetry.execute(
-              [:grpc_connection_pool, :pool, :get_channel],
-              %{},
-              %{pool_name: pool_name, available_channels: count}
-            )
-
+            maybe_emit_get_channel(pool_name, count, sample_rate)
             {:ok, channel}
 
           [] ->
@@ -145,6 +140,11 @@ defmodule GrpcConnectionPool.Pool do
       _ ->
         {:error, :not_connected}
     end
+  rescue
+    # ETS table absent (pool not started / PoolState restarting) or the
+    # strategy persistent_term key missing → behave as "no connection"
+    # rather than raising into the caller.
+    ArgumentError -> {:error, :not_connected}
   end
 
   @doc """
@@ -569,6 +569,25 @@ defmodule GrpcConnectionPool.Pool do
 
   defp update_pool_size(ets_table, delta) do
     :ets.update_counter(ets_table, :pool_size, {2, delta}, {:pool_size, 0})
+  end
+
+  # Per-call telemetry, gated by the configured sample rate so the metadata
+  # map isn't allocated when sampled out. 0 = off, 1 = every call, N = ~1-in-N.
+  defp emit_get_channel_telemetry(pool_name, count) do
+    :telemetry.execute(
+      [:grpc_connection_pool, :pool, :get_channel],
+      %{},
+      %{pool_name: pool_name, available_channels: count}
+    )
+  end
+
+  defp maybe_emit_get_channel(_pool_name, _count, 0), do: :ok
+
+  defp maybe_emit_get_channel(pool_name, count, 1),
+    do: emit_get_channel_telemetry(pool_name, count)
+
+  defp maybe_emit_get_channel(pool_name, count, rate) do
+    if :rand.uniform(rate) == 1, do: emit_get_channel_telemetry(pool_name, count), else: :ok
   end
 
   # Scaling lock with stale lock detection (30 second timeout)

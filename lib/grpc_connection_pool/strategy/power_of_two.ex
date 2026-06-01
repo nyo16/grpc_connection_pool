@@ -1,53 +1,64 @@
 defmodule GrpcConnectionPool.Strategy.PowerOfTwo do
   @moduledoc """
-  Power-of-two-choices with least-recently-used tiebreak.
+  Power-of-two-choices with a least-frequently-used tiebreak.
 
-  Picks two random channel indices and returns the one that was
-  least recently used (based on a timestamp stored in ETS alongside
-  each channel). This provides better load distribution than pure
-  random under uneven workloads.
+  Picks two distinct random channel indices and returns the one with the lower
+  selection count, then increments that count. This spreads load more evenly
+  than pure random under skewed workloads.
 
-  Each channel slot stores `{:channel, index} => {channel, last_used_at}`
-  in ETS. The `last_used_at` is updated on each selection.
+  Load is tracked in a lock-free `:atomics` array (one counter per slot) rather
+  than in ETS, so selection performs **no ETS read or write** in the hot path —
+  avoiding the write-lock contention that an `:ets.update_element` on every
+  call would cause under concurrency.
+
+  ## Sizing and scaling
+
+  The atomics array is fixed-size at creation. It is sized to
+  `max(pool_size, max_slots)` where `max_slots` defaults to `1024` and is
+  configurable:
+
+      config :grpc_connection_pool, power_of_two_max_slots: 2048
+
+  If the pool ever scales beyond the array size, `select/3` falls back to a
+  pure power-of-two-choices pick (no counter) for the out-of-range indices, so
+  it stays correct (never crashes) — it just loses the LFU signal for those
+  extra slots.
   """
 
   @behaviour GrpcConnectionPool.Strategy
 
+  @default_max_slots 1024
+
   @impl true
-  def init(_pool_name, _pool_size) do
-    :ok
+  def init(_pool_name, pool_size) do
+    max_slots =
+      Application.get_env(:grpc_connection_pool, :power_of_two_max_slots, @default_max_slots)
+
+    size = max(pool_size, max_slots)
+    {:atomics.new(size, signed: false), size}
   end
 
   @impl true
-  def select(_state, channel_count, ets_table) do
-    if channel_count == 1 do
-      {:ok, 0}
-    else
-      i = :rand.uniform(channel_count) - 1
-      j = pick_different(i, channel_count)
+  def select({_ref, _size}, 1, _ets_table), do: {:ok, 0}
 
-      # Compare last_used timestamps
-      ts_i = get_last_used(ets_table, i)
-      ts_j = get_last_used(ets_table, j)
+  def select({ref, size}, channel_count, _ets_table) do
+    i = :rand.uniform(channel_count) - 1
+    j = pick_different(i, channel_count)
 
-      chosen = if ts_i <= ts_j, do: i, else: j
-
-      # Update last_used for the chosen channel
-      :ets.update_element(ets_table, {:channel, chosen}, {3, System.monotonic_time()})
-
+    if i < size and j < size do
+      ci = :atomics.get(ref, i + 1)
+      cj = :atomics.get(ref, j + 1)
+      chosen = if ci <= cj, do: i, else: j
+      :atomics.add(ref, chosen + 1, 1)
       {:ok, chosen}
+    else
+      # Scaled beyond the counter array — pure P2C fallback, no LFU signal.
+      {:ok, i}
     end
   end
 
   defp pick_different(i, count) do
     j = :rand.uniform(count) - 1
     if j == i, do: rem(i + 1, count), else: j
-  end
-
-  defp get_last_used(ets_table, index) do
-    case :ets.lookup(ets_table, {:channel, index}) do
-      [{_, _channel, last_used}] -> last_used
-      _ -> 0
-    end
   end
 end

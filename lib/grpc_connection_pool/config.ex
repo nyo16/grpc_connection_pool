@@ -97,6 +97,7 @@ defmodule GrpcConnectionPool.Config do
           size: pos_integer(),
           name: atom() | nil,
           telemetry_interval: pos_integer(),
+          telemetry_sample_rate: non_neg_integer(),
           strategy: atom()
         }
 
@@ -307,6 +308,10 @@ defmodule GrpcConnectionPool.Config do
       size: opts[:size] || 5,
       name: opts[:name],
       telemetry_interval: opts[:telemetry_interval] || 5_000,
+      # Per-call get_channel telemetry sampling: 1 = emit every call (default,
+      # backward compatible), 0 = never, N = emit ~1-in-N. High-throughput
+      # callers can set 0 and rely on the periodic :status event instead.
+      telemetry_sample_rate: opts[:telemetry_sample_rate] || 1,
       strategy: opts[:strategy] || :round_robin
     }
   end

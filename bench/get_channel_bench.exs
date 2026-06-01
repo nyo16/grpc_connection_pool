@@ -6,7 +6,7 @@
 #
 # Run: mix run bench/get_channel_bench.exs
 
-alias GrpcConnectionPool.{Config, Pool, PoolState}
+alias GrpcConnectionPool.{Config, Pool}
 
 # Suppress noisy logs during benchmarking
 Logger.configure(level: :warning)
@@ -48,10 +48,6 @@ defmodule BenchHelper do
     end
 
     :ets.insert(ets_table, {:channel_count, size})
-
-    # Also populate channel_slots so the data is consistent
-    slots = Map.new(0..(size - 1), fn i -> {self(), i} end)
-    :ets.insert(ets_table, {:channel_slots, slots})
 
     pool_name
   end
