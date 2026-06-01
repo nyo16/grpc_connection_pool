@@ -105,7 +105,16 @@ Memory is now **constant regardless of pool size** (was O(n) due to list allocat
 | random      | 1.87M | 534 ns | 1.05 KB |
 | power_of_two | 1.08M | 925 ns | 2.05 KB |
 
-Round-robin is fastest due to atomics. Power-of-two trades ~1.8x overhead for better load distribution under uneven workloads.
+Round-robin is fastest due to atomics. Power-of-two trades some overhead for
+better load distribution under uneven workloads.
+
+> **Note (post-v0.3.0):** `power_of_two` was reworked to track load in a
+> lock-free `:atomics` array (least-frequently-used tiebreak) instead of writing
+> a `last_used` timestamp into ETS on every selection. This removes the ETS
+> write — and its write-lock contention — from the selection hot path, so the
+> `power_of_two` row above (measured with the old ETS-write implementation) now
+> understates its throughput and overstates its memory. **Re-run
+> `mix run bench/get_channel_bench.exs` to refresh these numbers.**
 
 ## Architecture Changes
 
@@ -138,7 +147,7 @@ Pool.Supervisor (one_for_one)
 
 3. **Channel array** — Channels stored as `{:channel, 0}`, `{:channel, 1}`, ... for O(1) indexed access. A `:channel_count` key tracks the number of connected channels.
 
-4. **Atomics counter** — The round-robin strategy uses `:atomics.add_get/3` for lock-free, contention-free counter increments (no ETS writes in the hot path).
+4. **Atomics counters** — The round-robin strategy uses `:atomics.add_get/3` for lock-free, contention-free counter increments (no ETS writes in the hot path). Power-of-two likewise tracks per-slot selection counts in `:atomics` (no ETS writes on selection).
 
 5. **TelemetryReporter** — Replaced recursive function + `:timer.sleep` with a proper GenServer that uses `Process.send_after`. If a tick crashes, the GenServer recovers and continues.
 
