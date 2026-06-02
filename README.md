@@ -89,13 +89,16 @@ end
 # Start pool
 {:ok, _pid} = GrpcConnectionPool.start_link(config)
 
-# Execute gRPC operations
-operation = fn channel ->
-  request = %MyService.ListRequest{}
-  MyService.Stub.list(channel, request)
-end
+# Get a channel and make a gRPC call. get_channel/1 returns a channel
+# directly (no checkout/checkin) using the configured selection strategy.
+case GrpcConnectionPool.get_channel() do
+  {:ok, channel} ->
+    request = %MyService.ListRequest{}
+    MyService.Stub.list(channel, request)
 
-{:ok, response} = GrpcConnectionPool.execute(operation)
+  {:error, :not_connected} ->
+    {:error, :unavailable}
+end
 ```
 
 ### 2. Local Development
@@ -134,7 +137,10 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
   pool: [
     size: 5,                     # Number of connections in pool
     name: MyApp.GrpcPool,        # Pool name (must be unique)
-    strategy: :round_robin       # :round_robin | :random | :power_of_two | CustomModule
+    strategy: :round_robin,      # :round_robin | :random | :power_of_two | CustomModule
+    telemetry_interval: 5_000,   # Interval (ms) for periodic :status events
+    telemetry_sample_rate: 1     # Per-call :get_channel event: 1 = every call,
+                                 # 0 = off, N = ~1-in-N (see Telemetry below)
   ],
   connection: [
     keepalive: 30_000,           # HTTP/2 keepalive interval
@@ -144,6 +150,12 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
   ]
 ])
 ```
+
+> **High-throughput tip:** the `[:grpc_connection_pool, :pool, :get_channel]`
+> event fires on every `get_channel/1` by default. On very hot pools set
+> `telemetry_sample_rate: 0` (or a sampling factor `N`) and rely on the periodic
+> `[:grpc_connection_pool, :pool, :status]` event instead — this avoids a
+> per-call metadata-map allocation in the hot path.
 
 ### Configuration from Environment
 
@@ -483,66 +495,55 @@ end
 ### Basic Operations
 
 ```elixir
-# Simple operation with default pool
-operation = fn channel ->
-  request = %MyService.GetUserRequest{user_id: "123"}
-  MyService.Stub.get_user(channel, request)
-end
+# Simple call against the default pool
+case GrpcConnectionPool.get_channel() do
+  {:ok, channel} ->
+    request = %MyService.GetUserRequest{user_id: "123"}
 
-case GrpcConnectionPool.execute(operation) do
-  {:ok, {:ok, user}} -> IO.puts("Found user: #{user.name}")
-  {:ok, {:error, error}} -> IO.puts("gRPC error: #{inspect(error)}")
-  {:error, reason} -> IO.puts("Pool error: #{inspect(reason)}")
+    case MyService.Stub.get_user(channel, request) do
+      {:ok, user} -> IO.puts("Found user: #{user.name}")
+      {:error, error} -> IO.puts("gRPC error: #{inspect(error)}")
+    end
+
+  {:error, :not_connected} ->
+    IO.puts("Pool has no healthy connections")
 end
 ```
 
 ### Using Named Pools
 
 ```elixir
-# Execute on specific pool
-user_operation = fn channel ->
-  request = %UserService.GetRequest{id: "123"}
-  UserService.Stub.get(channel, request)
+# Pass a pool name to get_channel/1 to target a specific pool
+with {:ok, channel} <- GrpcConnectionPool.get_channel(MyApp.UserService.Pool) do
+  UserService.Stub.get(channel, %UserService.GetRequest{id: "123"})
 end
 
-payment_operation = fn channel ->
-  request = %PaymentService.ChargeRequest{amount: 1000}
-  PaymentService.Stub.charge(channel, request)
+with {:ok, channel} <- GrpcConnectionPool.get_channel(MyApp.PaymentService.Pool) do
+  PaymentService.Stub.charge(channel, %PaymentService.ChargeRequest{amount: 1000})
 end
-
-# Use different pools for different services
-{:ok, user} = GrpcConnectionPool.execute(user_operation, pool: MyApp.UserService.Pool)
-{:ok, charge} = GrpcConnectionPool.execute(payment_operation, pool: MyApp.PaymentService.Pool)
 ```
 
 ### Error Handling
 
 ```elixir
-operation = fn channel ->
-  request = %MyService.CreateRequest{data: "important data"}
-  MyService.Stub.create(channel, request)
-end
+case GrpcConnectionPool.get_channel() do
+  {:ok, channel} ->
+    request = %MyService.CreateRequest{data: "important data"}
 
-case GrpcConnectionPool.execute(operation) do
-  {:ok, {:ok, result}} -> 
-    # Success case
-    handle_success(result)
-    
-  {:ok, {:error, %GRPC.RPCError{status: status, message: message}}} ->
-    # gRPC-level error (service returned error)
-    handle_grpc_error(status, message)
-    
+    case MyService.Stub.create(channel, request) do
+      {:ok, result} ->
+        # Success case
+        handle_success(result)
+
+      {:error, %GRPC.RPCError{status: status, message: message}} ->
+        # gRPC-level error (service returned an error)
+        handle_grpc_error(status, message)
+    end
+
   {:error, :not_connected} ->
-    # Pool has no healthy connections
+    # Pool has no healthy connections — also returned if the pool isn't
+    # started yet (get_channel/1 never raises).
     handle_connection_error()
-    
-  {:error, {:exit, {:noproc, _}}} ->
-    # Pool doesn't exist
-    handle_pool_missing_error()
-    
-  {:error, reason} ->
-    # Other pool-level errors
-    handle_pool_error(reason)
 end
 ```
 
@@ -709,7 +710,7 @@ The library emits telemetry events for observability. Attach handlers to monitor
 | Event | Measurements | Metadata |
 |-------|--------------|----------|
 | `[:grpc_connection_pool, :pool, :init]` | `pool_size` | `pool_name`, `endpoint` |
-| `[:grpc_connection_pool, :pool, :get_channel]` | `duration` | `pool_name`, `available_channels` |
+| `[:grpc_connection_pool, :pool, :get_channel]` | _(none)_ | `pool_name`, `available_channels` (emitted per `telemetry_sample_rate`) |
 | `[:grpc_connection_pool, :pool, :scale_up]` | `duration`, `requested`, `succeeded`, `failed`, `new_size` | `pool_name` |
 | `[:grpc_connection_pool, :pool, :scale_down]` | `duration`, `requested`, `terminated`, `new_size` | `pool_name` |
 | `[:grpc_connection_pool, :pool, :status]` | `expected_size`, `current_size` | `pool_name` |
@@ -839,11 +840,9 @@ defmodule MyApp.GrpcTest do
   end
   
   test "grpc operation works" do
-    operation = fn channel ->
-      # Your gRPC test operation
-    end
-    
-    assert {:ok, result} = GrpcConnectionPool.execute(operation, pool: TestPool)
+    assert {:ok, channel} = GrpcConnectionPool.get_channel(TestPool)
+    request = %MyService.EchoRequest{message: "ping"}
+    assert {:ok, _reply} = MyService.Stub.echo(channel, request)
   end
 end
 ```
@@ -858,7 +857,7 @@ The pool supports pluggable channel selection strategies via the `GrpcConnection
 |----------|--------|-------------|----------|
 | **Round Robin** | `:round_robin` | Lock-free atomics counter, cycles through channels sequentially | General use (default) |
 | **Random** | `:random` | Random channel selection via `:rand.uniform` | Avoiding correlated hot-spotting |
-| **Power of Two** | `:power_of_two` | Pick 2 random channels, choose least-recently-used | Uneven workloads |
+| **Power of Two** | `:power_of_two` | Pick 2 random channels, choose least-frequently-used (lock-free atomics counters) | Uneven workloads |
 
 ### Configuring a Strategy
 

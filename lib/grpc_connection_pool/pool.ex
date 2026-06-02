@@ -300,7 +300,9 @@ defmodule GrpcConnectionPool.Pool do
         end
     end
   rescue
-    e -> {:error, e}
+    # Pool not started / ETS table or persistent_term missing. Other
+    # exceptions propagate instead of being swallowed as opaque structs.
+    ArgumentError -> {:error, :pool_not_found}
   end
 
   @doc """
@@ -326,7 +328,9 @@ defmodule GrpcConnectionPool.Pool do
         end
     end
   rescue
-    e -> {:error, e}
+    # Pool not started / ETS table or persistent_term missing. Other
+    # exceptions propagate instead of being swallowed as opaque structs.
+    ArgumentError -> {:error, :pool_not_found}
   end
 
   defp do_scale_down(pool_name, count, ets_table) do
@@ -424,7 +428,9 @@ defmodule GrpcConnectionPool.Pool do
         {:ok, current_size}
     end
   rescue
-    e -> {:error, e}
+    # Pool not started / ETS table or persistent_term missing. Other
+    # exceptions propagate instead of being swallowed as opaque structs.
+    ArgumentError -> {:error, :pool_not_found}
   end
 
   @doc """
@@ -618,6 +624,7 @@ end
 defmodule GrpcConnectionPool.Pool.TelemetryReporter do
   @moduledoc false
   use GenServer
+  require Logger
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -653,7 +660,13 @@ defmodule GrpcConnectionPool.Pool.TelemetryReporter do
     schedule(state.interval)
     {:noreply, state}
   rescue
-    _ ->
+    e ->
+      # Keep the reporter alive across transient failures (e.g. ETS table
+      # absent during a PoolState restart), but don't swallow it silently.
+      Logger.warning(
+        "TelemetryReporter status tick failed for pool #{inspect(state.pool_name)}: #{inspect(e)}"
+      )
+
       schedule(state.interval)
       {:noreply, state}
   end

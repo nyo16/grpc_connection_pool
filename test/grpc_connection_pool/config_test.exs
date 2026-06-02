@@ -130,6 +130,7 @@ defmodule GrpcConnectionPool.ConfigTest do
             type: :production,
             host: "api.example.com",
             port: 443,
+            ssl: [verify: :verify_peer],
             interceptors: [MyApp.ProdInterceptor]
           ]
         )
@@ -166,6 +167,36 @@ defmodule GrpcConnectionPool.ConfigTest do
 
       assert config.endpoint.type == :staging
       assert config.endpoint.interceptors == [MyApp.StagingInterceptor]
+    end
+  end
+
+  describe "production TLS safety" do
+    test "production endpoint without ssl or credentials is rejected" do
+      assert {:error, reason} =
+               Config.new(endpoint: [type: :production, host: "api.example.com", port: 443])
+
+      assert reason =~ "production endpoint requires TLS"
+    end
+
+    test "production endpoint with explicit ssl is accepted" do
+      assert {:ok, config} =
+               Config.new(
+                 endpoint: [type: :production, host: "api.example.com", port: 443, ssl: []]
+               )
+
+      assert config.endpoint.type == :production
+    end
+
+    test "local endpoint does not require TLS" do
+      assert {:ok, config} = Config.new(endpoint: [type: :local, host: "localhost", port: 9090])
+      assert config.endpoint.type == :local
+    end
+
+    @tag skip: not function_exported?(:public_key, :cacerts_get, 0)
+    test "production/1 defaults to verifying TLS (OTP 25+)" do
+      {:ok, config} = Config.production(host: "api.example.com", port: 443)
+      assert config.endpoint.ssl[:verify] == :verify_peer
+      assert config.endpoint.ssl[:cacerts] != nil
     end
   end
 

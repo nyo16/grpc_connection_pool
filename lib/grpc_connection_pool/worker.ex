@@ -154,9 +154,11 @@ defmodule GrpcConnectionPool.Worker do
       {:error, reason} ->
         now = System.monotonic_time()
 
-        Logger.error(
-          "Failed to create gRPC connection for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
-        )
+        unless state.config.connection.suppress_connection_errors do
+          Logger.error(
+            "Failed to create gRPC connection for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
+          )
+        end
 
         :telemetry.execute(
           [:grpc_connection_pool, :channel, :connection_failed],
@@ -176,7 +178,7 @@ defmodule GrpcConnectionPool.Worker do
         else
           {delay, new_backoff} = Backoff.fail(state.backoff_state)
 
-          Logger.info(
+          Logger.debug(
             "Retrying connection in #{delay}ms (attempt #{new_attempt}/#{max_attempts})..."
           )
 
@@ -285,10 +287,6 @@ defmodule GrpcConnectionPool.Worker do
       _ ->
         :error
     end
-  rescue
-    _ -> :error
-  catch
-    _ -> :error
   end
 
   defp schedule_ping(config) do
@@ -380,7 +378,7 @@ defmodule GrpcConnectionPool.Worker do
       %{pool_name: state.pool_name, reason: reason}
     )
 
-    Logger.info(
+    Logger.debug(
       "Scheduling reconnection for pool #{inspect(state.pool_name)} in #{delay}ms after disconnect"
     )
 

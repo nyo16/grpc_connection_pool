@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Security:** production configs now default to verifying TLS. `Config.production/1`
+  sets `verify: :verify_peer`, and a `:production` endpoint built without `ssl`/`credentials`
+  no longer silently downgrades to plaintext h2c — it raises a clear configuration error.
+- Narrowed several broad `rescue`/`catch` clauses (`Pool.scale_up/scale_down`,
+  `Worker.send_ping`, `TelemetryReporter`) so unexpected errors surface instead of being
+  swallowed; demoted expected reconnect/retry logs to `:debug`.
+
+### Fixed
+- Documentation: replaced README examples referencing a non-existent
+  `GrpcConnectionPool.execute/1` with the real `get_channel/1` + stub-call pattern;
+  corrected the stale install snippet and the `:get_channel` telemetry/strategy docs.
+
+## [0.3.5] - 2026-06-01
+
+### Fixed
+- **Slot-claim race in the hot path** — slot claim/release are now serialized through
+  `PoolState` (`register_channel/3`, `unregister_channel/2`). Concurrent worker
+  connects/disconnects could previously collide on a slot, leaving `:channel_count`
+  higher than the populated channels so `get_channel/1` returned `:not_connected` on a
+  healthy pool.
+- `get_channel/1` now returns `{:error, :not_connected}` (instead of raising) when the
+  pool is not started or `PoolState` is restarting.
+
+### Changed
+- **Hot-path performance:** collapsed the per-call ETS table-name rebuild + two
+  `persistent_term` lookups into one combined term; `RoundRobin` uses unsigned atomics
+  (no `abs/1`); `PowerOfTwo` now tracks load in lock-free `:atomics` counters
+  (least-frequently-used) instead of writing a timestamp to ETS on every selection.
+- Per-call `:get_channel` telemetry is configurable via `telemetry_sample_rate`
+  (default `1` = emit every call; `0` disables; `N` samples ~1-in-N).
+- The `pid => slot` map moved from ETS into `PoolState` state (slot claim is now O(1)).
+
 ## [0.3.0] - 2026-03-24
 
 ### Added
@@ -36,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `crash_after_reconnect_attempt` message — replaced by `max_reconnect_attempts` config with clean `{:stop, reason, state}` on exhaustion
 
-## [0.2.3] - 2025-01-29
+## [0.2.3] - 2026-01-29
 
 ### Added
 - Enhanced telemetry events for better observability:
@@ -49,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive telemetry documentation in README
 - Telemetry test suite
 
-## [0.2.2] - 2025-01-29
+## [0.2.2] - 2026-01-29
 
 ### Added
 - Support for gRPC client interceptors in endpoint configuration (thanks [@arctarus](https://github.com/arctarus))
