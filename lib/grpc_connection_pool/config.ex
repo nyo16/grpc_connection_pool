@@ -18,7 +18,11 @@ defmodule GrpcConnectionPool.Config do
   - `:pool` - Pool configuration
     - `:size` - Number of connections in pool (default: 5)
     - `:name` - Pool name (default: auto-generated)
-    - `:checkout_timeout` - Timeout for checking out connections (default: 15_000)
+    - `:strategy` - Channel selection strategy: `:round_robin` (default), `:random`,
+      `:power_of_two`, or a custom module implementing `GrpcConnectionPool.Strategy`
+    - `:telemetry_interval` - Interval in ms for the periodic `:status` event (default: 5_000)
+    - `:telemetry_sample_rate` - Per-call `:get_channel` telemetry: `1` = emit every
+      call (default), `0` = never, `N` = emit ~1-in-N (default: 1)
   - `:connection` - Connection-specific settings
     - `:keepalive` - Keepalive interval in milliseconds (default: 30_000)
     - `:health_check` - Whether to enable connection health checks (default: true)
@@ -224,13 +228,44 @@ defmodule GrpcConnectionPool.Config do
           type: :production,
           host: host,
           port: opts[:port] || 443,
-          ssl: opts[:ssl] || []
+          ssl: opts[:ssl] || default_production_ssl()
         ],
         pool: [
           size: opts[:pool_size] || 5,
           name: opts[:pool_name]
         ]
       )
+    end
+  end
+
+  @doc """
+  Default TLS options for production endpoints: verify the peer certificate
+  against the system CA store and check the hostname.
+
+  On OTP 25+ this returns a fully-verifying config. On older OTP (no
+  `:public_key.cacerts_get/0`) it returns `[]` and logs a warning, since there
+  is no portable system-CA accessor — set `:ssl` explicitly in that case.
+  """
+  @spec default_production_ssl() :: keyword()
+  def default_production_ssl do
+    if function_exported?(:public_key, :cacerts_get, 0) do
+      [
+        verify: :verify_peer,
+        cacerts: :public_key.cacerts_get(),
+        depth: 3,
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
+      ]
+    else
+      require Logger
+
+      Logger.warning(
+        "grpc_connection_pool: OTP < 25 has no system CA accessor; production TLS " <>
+          "will use library defaults. Set :ssl explicitly (e.g. cacertfile:) to verify peers."
+      )
+
+      []
     end
   end
 
@@ -300,6 +335,7 @@ defmodule GrpcConnectionPool.Config do
     }
 
     validate_endpoint_config!(base)
+    validate_production_tls!(opts, base)
     base
   end
 
@@ -371,4 +407,23 @@ defmodule GrpcConnectionPool.Config do
     do: raise(ArgumentError, "port is required for endpoint configuration")
 
   defp validate_endpoint_config!(_), do: :ok
+
+  # An *explicit* :production endpoint with neither :ssl nor :credentials would
+  # silently connect over plaintext h2c. Refuse it — the caller must opt into
+  # TLS (`ssl: [...]` / `credentials:`) or use `type: :local` for plaintext.
+  # Only fires when the caller explicitly passes `type: :production`; a defaulted
+  # type stays permissive for local/test usage.
+  defp validate_production_tls!(opts, %{ssl: nil, credentials: nil}) do
+    if opts[:type] == :production do
+      raise(
+        ArgumentError,
+        "production endpoint requires TLS: set :ssl (e.g. ssl: GrpcConnectionPool.Config.default_production_ssl()) " <>
+          "or :credentials, or use type: :local for an explicit plaintext connection"
+      )
+    end
+
+    :ok
+  end
+
+  defp validate_production_tls!(_opts, _base), do: :ok
 end

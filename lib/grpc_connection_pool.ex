@@ -21,8 +21,8 @@ defmodule GrpcConnectionPool do
 
       def deps do
         [
-          {:grpc_connection_pool, "~> 0.1.0"},
-          {:grpc, "~> 0.10.2"}
+          {:grpc_connection_pool, "~> 0.3"},
+          {:grpc, "~> 0.11"}
         ]
       end
 
