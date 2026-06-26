@@ -68,11 +68,17 @@ Add `grpc_connection_pool` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:grpc_connection_pool, "~> 0.3.0"},
-    {:grpc, "~> 0.11.5"}  # Required peer dependency
+    {:grpc_connection_pool, "~> 0.5.0"},
+    {:grpc, "~> 1.0"},  # Required peer dependency
+    {:gun, "~> 2.2"}    # grpc >= 1.0 makes gun optional; the default Gun adapter needs it
   ]
 end
 ```
+
+> **grpc 1.0:** this library targets grpc `~> 1.0`, which is client-only and makes
+> `:gun` an optional dependency. Since the pool uses the default Gun adapter, add
+> `:gun` explicitly. See the [Changelog](CHANGELOG.md) for the 0.5.0 migration notes
+> (telemetry event change, disconnect-detection rework).
 
 ## Quick Start
 
@@ -146,7 +152,7 @@ The library supports flexible configuration through `GrpcConnectionPool.Config`:
     keepalive: 30_000,           # HTTP/2 keepalive interval
     ping_interval: 25_000,       # Ping interval to keep connections warm
     health_check: true,          # Enable connection health monitoring
-    suppress_connection_errors: false  # Suppress gun_down/gun_error logs (useful for GCP endpoints)
+    suppress_connection_errors: false  # Suppress connection-down logs (useful for GCP endpoints)
   ]
 ])
 ```
@@ -723,9 +729,16 @@ The library emits telemetry events for observability. Attach handlers to monitor
 | `[:grpc_connection_pool, :channel, :connection_failed]` | `duration` | `pool_name`, `error` |
 | `[:grpc_connection_pool, :channel, :disconnected]` | `duration` | `pool_name`, `reason` |
 | `[:grpc_connection_pool, :channel, :ping]` | `duration` | `pool_name`, `result` (`:ok` or `:error`) |
-| `[:grpc_connection_pool, :channel, :gun_down]` | - | `pool_name`, `reason`, `protocol` |
-| `[:grpc_connection_pool, :channel, :gun_error]` | - | `pool_name`, `reason` |
+| `[:grpc_connection_pool, :channel, :connection_down]` | - | `pool_name`, `reason` |
 | `[:grpc_connection_pool, :channel, :reconnect_scheduled]` | `delay_ms`, `attempt` | `pool_name`, `reason` |
+
+> **Changed in 0.5.0 (grpc 1.0):** the `:gun_down` and `:gun_error` events were
+> removed. Under grpc 1.0 the Gun adapter owns the socket in its own process and
+> those gun messages never reach the pool. A single adapter-agnostic
+> `:channel, :connection_down` event (metadata `pool_name`, `reason`) is now emitted
+> when the monitored connection process dies. The `:disconnected` and
+> `:reconnect_scheduled` events are unchanged. If you handled `:gun_down`/`:gun_error`,
+> switch to `:connection_down` (or `:disconnected`).
 
 #### Example: Attaching Telemetry Handlers
 
@@ -971,7 +984,7 @@ If you see frequent reconnections:
 
 ### Connection Error Messages with GCP Services
 
-GCP gRPC endpoints have hardcoded timeouts that periodically close connections, causing `gun_down` error messages. This is normal behavior and the connection pool will automatically replace the workers. To suppress these expected error messages:
+GCP gRPC endpoints have hardcoded timeouts that periodically close connections, causing connection-down error messages. This is normal behavior and the connection pool will automatically replace the workers. To suppress these expected error messages:
 
 ```elixir
 config :my_app, GrpcConnectionPool,
@@ -981,7 +994,7 @@ config :my_app, GrpcConnectionPool,
     port: 443
   ],
   connection: [
-    suppress_connection_errors: true  # Suppress expected gun_down errors from GCP
+    suppress_connection_errors: true  # Suppress expected connection-down errors from GCP
   ]
 ```
 
@@ -1009,7 +1022,7 @@ mix test
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 

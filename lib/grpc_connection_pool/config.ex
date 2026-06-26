@@ -28,6 +28,10 @@ defmodule GrpcConnectionPool.Config do
     - `:health_check` - Whether to enable connection health checks (default: true)
     - `:ping_interval` - Interval to send ping to keep connection warm (default: 25_000)
 
+  > Note: gun's internal reconnect is disabled (`adapter_opts: [retry: 0]`) so the
+  > pool's own backoff governs reconnection and connects to a dead endpoint fail
+  > fast instead of stalling. This is not user-configurable.
+
   ## Examples
 
   ### Production Configuration
@@ -377,6 +381,12 @@ defmodule GrpcConnectionPool.Config do
   defp build_connection_opts(endpoint, connection) do
     base_opts = [
       adapter_opts: [
+        # Disable gun's internal reconnect (default 100 retries). Under grpc 1.0 the
+        # adapter's internal retry keeps a dead connection's owner process alive and
+        # makes connects to a dead endpoint block ~5s per attempt. With retry: 0 gun
+        # fails fast and dies on a drop, so this pool's own Backoff governs reconnects
+        # and the connection monitor in Worker can detect drops. See SPIKE-1.
+        retry: 0,
         http2_opts: %{keepalive: connection.keepalive}
       ]
     ]

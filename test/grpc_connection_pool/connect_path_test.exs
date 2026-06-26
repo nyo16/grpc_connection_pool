@@ -1,24 +1,34 @@
 defmodule GrpcConnectionPool.ConnectPathTest do
   @moduledoc """
   Exercises the real connect path — worker → `GRPC.Stub.connect` → slot claim →
-  `get_channel/1` — against an in-process gRPC server, with no external emulator.
+  `get_channel/1` — against an in-process HTTP/2 server, with no external emulator.
 
-  The pool only needs the HTTP/2 connection to come up to register a channel; it
-  never dispatches an RPC here, so the embedded server implements no methods.
+  grpc >= 1.0 is client-only (`GRPC.Server` was removed), so we stand up a bare
+  Cowboy HTTP/2 (h2c) listener instead. The pool only needs the HTTP/2 connection
+  to come up to register a channel; it never dispatches an RPC here, so the
+  handler is a stub that is never invoked.
   """
   use ExUnit.Case, async: false
 
   alias GrpcConnectionPool.{Config, Pool}
 
-  # Reuses a service definition from googleapis_proto_ex (test-only dep). No RPC
-  # methods are implemented because the pool never calls one in these tests.
-  defmodule TestServer do
-    use GRPC.Server, service: Google.Pubsub.V1.Publisher.Service
+  @listener __MODULE__.Listener
+
+  # Cowboy handler stub — the pool never sends an RPC, so this is never called.
+  defmodule Handler do
+    def init(req, state), do: {:ok, :cowboy_req.reply(200, %{}, "", req), state}
   end
 
   setup do
     # Port 0 → OS-assigned free port (avoids cross-test port collisions).
-    {:ok, _pid, port} = GRPC.Server.start(TestServer, 0)
+    # `start_clear` auto-detects the HTTP/2 connection preface (h2c prior
+    # knowledge), which is what the gRPC Gun client speaks over plain HTTP.
+    dispatch = :cowboy_router.compile([{:_, [{:_, Handler, []}]}])
+
+    {:ok, _} =
+      :cowboy.start_clear(@listener, [{:port, 0}], %{env: %{dispatch: dispatch}})
+
+    port = :ranch.get_port(@listener)
     pool_name = :"connect_path_#{System.unique_integer([:positive])}"
 
     on_exit(fn ->
@@ -28,7 +38,7 @@ defmodule GrpcConnectionPool.ConnectPathTest do
         :exit, _ -> :ok
       end
 
-      GRPC.Server.stop(TestServer)
+      :cowboy.stop_listener(@listener)
     end)
 
     %{port: port, pool_name: pool_name}

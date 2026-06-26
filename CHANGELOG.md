@@ -5,7 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-06-26
+
+### Changed
+- **grpc 1.0 support.** Bumped `grpc` to `~> 1.0` (was `0.11.5`). grpc 1.0 is
+  client-only (`GRPC.Server` was removed) and makes `:gun` optional, so `gun ~> 2.2`
+  is now a direct dependency (the pool uses the default Gun adapter). `:public_key`
+  and `:ssl` are declared in `extra_applications` (used by `Config`).
+- **BREAKING (telemetry): the `[:grpc_connection_pool, :channel, :gun_down]` and
+  `[:grpc_connection_pool, :channel, :gun_error]` events were removed.** Under
+  grpc 1.0 the Gun adapter owns the socket in its own process, so those gun
+  messages never reach the pool. A single adapter-agnostic
+  `[:grpc_connection_pool, :channel, :connection_down]` event (metadata
+  `pool_name`, `reason`) is emitted instead. `:disconnected` and
+  `:reconnect_scheduled` are unchanged. Consumers handling `:gun_down`/`:gun_error`
+  should switch to `:connection_down` (or `:disconnected`).
+- **Disconnect detection reworked.** grpc 1.0's Gun adapter keeps the live
+  connection inside its own `ConnectionProcess`, which lingers as a zombie after a
+  drop, so the old `gun_down`/`gun_error` message handlers were dead code. The
+  worker now monitors the inner gun process and pairs it with
+  `adapter_opts: [retry: 0]` so gun fails fast on a drop and the pool's own
+  `Backoff` governs reconnection. This also restores fast-fail connects (a dead
+  endpoint now errors in ~0ms instead of stalling ~5s per attempt).
+
+### Fixed
+- **License declaration** now correctly reports **Apache-2.0** (matching the committed
+  `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
+  mismatch (#6).
+
+## [0.4.0] - 2026-06-01
 
 ### Changed
 - **Security:** production configs now default to verifying TLS. `Config.production/1`

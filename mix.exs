@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.3.5"
+  @version "0.5.0"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -10,6 +10,7 @@ defmodule GrpcConnectionPool.MixProject do
       version: @version,
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       docs: docs(),
       package: package(),
@@ -25,9 +26,14 @@ defmodule GrpcConnectionPool.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :public_key, :ssl]
     ]
   end
+
+  # test/support holds shared test helpers (e.g. the Cowboy h2c server) compiled
+  # only in the test environment.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def cli do
     [
@@ -53,7 +59,7 @@ defmodule GrpcConnectionPool.MixProject do
     [
       description: description(),
       files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
         "Documentation" => "https://hexdocs.pm/grpc_connection_pool",
@@ -94,7 +100,9 @@ defmodule GrpcConnectionPool.MixProject do
   defp deps do
     [
       {:backoff, "~> 1.1"},
-      {:grpc, "~> 0.11.5"},
+      {:grpc, "~> 1.0"},
+      # grpc >= 1.0 makes gun optional; we use the default Gun adapter, so require it explicitly
+      {:gun, "~> 2.2"},
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
@@ -105,7 +113,10 @@ defmodule GrpcConnectionPool.MixProject do
       {:goth, "~> 1.4", only: :test},
       # Optional dependencies for testing and development
 
-      {:googleapis_proto_ex, "~> 0.3.3", only: :test}
+      {:googleapis_proto_ex, "~> 0.4.0", only: :test},
+      # grpc >= 1.0 is client-only (no GRPC.Server); tests stand up a bare HTTP/2
+      # listener with Cowboy to exercise the real connect path.
+      {:cowboy, "~> 2.14", only: :test}
     ]
   end
 end
