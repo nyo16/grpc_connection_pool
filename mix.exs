@@ -59,7 +59,7 @@ defmodule GrpcConnectionPool.MixProject do
     [
       description: description(),
       files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
         "Documentation" => "https://hexdocs.pm/grpc_connection_pool",

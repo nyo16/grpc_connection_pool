@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   swallowed; demoted expected reconnect/retry logs to `:debug`.
 
 ### Fixed
+- **License declaration** now correctly reports **Apache-2.0** (matching the committed
+  `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
+  mismatch (#6).
 - Documentation: replaced README examples referencing a non-existent
   `GrpcConnectionPool.execute/1` with the real `get_channel/1` + stub-call pattern;
   corrected the stale install snippet and the `:get_channel` telemetry/strategy docs.
