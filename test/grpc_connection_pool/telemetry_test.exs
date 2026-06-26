@@ -1,60 +1,111 @@
 defmodule GrpcConnectionPool.TelemetryTest do
+  @moduledoc """
+  Telemetry tests driven by REAL connects and disconnects against a Cowboy h2c
+  server. Under grpc 1.0 the worker no longer receives gun messages, so disconnect
+  telemetry is exercised by killing the server-side connection (a genuine drop)
+  rather than synthesizing `:gun_down`/`:gun_error` messages.
+  """
   use ExUnit.Case, async: false
 
   alias GrpcConnectionPool.{Config, Pool, Worker}
+  alias GrpcConnectionPool.TestServer
 
   @moduletag :telemetry
 
-  describe "Pool telemetry events" do
-    test "pool init telemetry event is emitted" do
-      pool_name = :"TelemetryTestPool_#{:erlang.unique_integer([:positive])}"
-      test_pid = self()
-      handler_id = "test-pool-init-handler-#{:erlang.unique_integer([:positive])}"
+  describe "pool telemetry events" do
+    test "pool init event is emitted" do
+      pool_name = :"TelemetryInit_#{System.unique_integer([:positive])}"
+      attach([[:grpc_connection_pool, :pool, :init]])
 
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :pool, :init],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
+      {:ok, config} = Config.local(host: "localhost", port: 9999, pool_size: 2)
+      {:ok, _} = Pool.start_link(config, name: pool_name)
+      on_exit(fn -> safe_stop(pool_name) end)
 
-      {:ok, config} =
-        Config.local(
-          host: "localhost",
-          port: 9999,
-          pool_size: 2,
-          pool: [name: pool_name, telemetry_interval: 60_000]
-        )
-
-      {:ok, _pid} = Pool.start_link(config, name: pool_name)
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :init], measurements, metadata},
-                     1000
-
-      assert measurements.pool_size == 2
-      assert metadata.pool_name == pool_name
-      assert metadata.endpoint == "localhost:9999"
-
-      :telemetry.detach(handler_id)
-      Pool.stop(pool_name)
+      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :init], meas, meta}, 1_000
+      assert meas.pool_size == 2
+      assert meta.pool_name == pool_name
+      assert meta.endpoint == "localhost:9999"
     end
   end
 
-  describe "Worker telemetry events" do
+  describe "channel connect/disconnect telemetry (real drop)" do
     setup do
-      registry_name = :"WorkerTelemetryTestRegistry_#{:erlang.unique_integer([:positive])}"
-      pool_name = :"WorkerTelemetryTestPool_#{:erlang.unique_integer([:positive])}"
-      {:ok, _} = Registry.start_link(keys: :duplicate, name: registry_name)
+      {ref, port} = TestServer.start!()
+      pool_name = :"TelemetryDrop_#{System.unique_integer([:positive])}"
 
-      {:ok, config} =
-        Config.local(
-          host: "localhost",
-          port: 9999,
-          pool_size: 1,
-          connection: [ping_interval: 100, max_reconnect_attempts: 50]
-        )
+      on_exit(fn ->
+        safe_stop(pool_name)
+        TestServer.stop(ref)
+      end)
+
+      %{ref: ref, port: port, pool_name: pool_name}
+    end
+
+    @tag :capture_log
+    test "a real drop emits connection_down, disconnected, and reconnect_scheduled", ctx do
+      attach([
+        [:grpc_connection_pool, :channel, :connected],
+        [:grpc_connection_pool, :channel, :connection_down],
+        [:grpc_connection_pool, :channel, :disconnected],
+        [:grpc_connection_pool, :channel, :reconnect_scheduled]
+      ])
+
+      start_pool!(ctx.port, ctx.pool_name)
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+
+      TestServer.drop_connections(ctx.ref)
+
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connection_down], cd_meas,
+                      cd_meta},
+                     2_000
+
+      assert cd_meas == %{}
+      assert cd_meta.pool_name == ctx.pool_name
+      assert match?({:shutdown, _}, cd_meta.reason)
+
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :disconnected], dis_meas,
+                      dis_meta},
+                     2_000
+
+      assert is_integer(dis_meas.duration)
+      assert dis_meta.pool_name == ctx.pool_name
+      assert match?({:connection_down, _}, dis_meta.reason)
+
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :reconnect_scheduled],
+                      rs_meas, rs_meta},
+                     2_000
+
+      assert is_integer(rs_meas.delay_ms) and rs_meas.delay_ms > 0
+      assert rs_meas.attempt >= 1
+      assert rs_meta.pool_name == ctx.pool_name
+      assert match?({:connection_down, _}, rs_meta.reason)
+    end
+
+    @tag :capture_log
+    test "the pool reconnects to the live server after a drop", ctx do
+      attach([[:grpc_connection_pool, :channel, :connected]])
+
+      start_pool!(ctx.port, ctx.pool_name)
+      # initial connect
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+
+      TestServer.drop_connections(ctx.ref)
+
+      # reconnect to the still-listening server
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+
+      assert TestServer.wait_until(
+               fn -> match?({:ok, %GRPC.Channel{}}, Pool.get_channel(ctx.pool_name)) end,
+               2_000
+             )
+    end
+  end
+
+  describe "ping telemetry events" do
+    setup do
+      registry_name = :"PingTelemetryRegistry_#{System.unique_integer([:positive])}"
+      pool_name = :"PingTelemetryPool_#{System.unique_integer([:positive])}"
+      {:ok, _} = Registry.start_link(keys: :duplicate, name: registry_name)
 
       on_exit(fn ->
         case Process.whereis(registry_name) do
@@ -67,331 +118,72 @@ defmodule GrpcConnectionPool.TelemetryTest do
         end
       end)
 
-      %{config: config, registry_name: registry_name, pool_name: pool_name}
+      %{registry_name: registry_name, pool_name: pool_name}
     end
 
-    @tag timeout: 20_000
-    test "gun_down telemetry event is emitted", %{
-      config: config,
-      registry_name: registry_name,
-      pool_name: pool_name
-    } do
-      test_pid = self()
-      handler_id = "test-gun-down-handler-#{:erlang.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :channel, :gun_down],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
-
-      worker_opts = [
-        config: config,
-        registry_name: registry_name,
-        pool_name: pool_name
-      ]
-
-      {:ok, worker_pid} = Worker.start_link(worker_opts)
-      # Wait for connection attempt to complete/timeout (GRPC timeout is ~5s)
-      Process.sleep(6000)
-
-      # Now the worker is ready to process messages
-      send(worker_pid, {:gun_down, make_ref(), :http2, :closed, []})
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :gun_down], measurements,
-                      metadata},
-                     2000
-
-      assert measurements == %{}
-      assert metadata.pool_name == pool_name
-      assert metadata.reason == :closed
-      assert metadata.protocol == :http2
-
-      :telemetry.detach(handler_id)
-      GenServer.stop(worker_pid)
-    end
-
-    @tag timeout: 20_000
-    test "gun_error telemetry event is emitted", %{
-      config: config,
-      registry_name: registry_name,
-      pool_name: pool_name
-    } do
-      test_pid = self()
-      handler_id = "test-gun-error-handler-#{:erlang.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :channel, :gun_error],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
-
-      worker_opts = [
-        config: config,
-        registry_name: registry_name,
-        pool_name: pool_name
-      ]
-
-      {:ok, worker_pid} = Worker.start_link(worker_opts)
-      # Wait for connection attempt to complete/timeout (GRPC timeout is ~5s)
-      Process.sleep(6000)
-
-      send(worker_pid, {:gun_error, make_ref(), :stream_error})
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :gun_error], measurements,
-                      metadata},
-                     2000
-
-      assert measurements == %{}
-      assert metadata.pool_name == pool_name
-      assert metadata.reason == :stream_error
-
-      :telemetry.detach(handler_id)
-      GenServer.stop(worker_pid)
-    end
-
-    @tag timeout: 20_000
-    test "reconnect_scheduled telemetry event is emitted", %{
-      config: config,
-      registry_name: registry_name,
-      pool_name: pool_name
-    } do
-      test_pid = self()
-      handler_id = "test-reconnect-scheduled-handler-#{:erlang.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :channel, :reconnect_scheduled],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
-
-      worker_opts = [
-        config: config,
-        registry_name: registry_name,
-        pool_name: pool_name
-      ]
-
-      {:ok, worker_pid} = Worker.start_link(worker_opts)
-      # Wait for connection attempt to complete/timeout (GRPC timeout is ~5s)
-      Process.sleep(6000)
-
-      # Trigger disconnect which schedules reconnection
-      send(worker_pid, {:gun_down, make_ref(), :http2, :closed, []})
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :reconnect_scheduled],
-                      measurements, metadata},
-                     2000
-
-      assert is_integer(measurements.delay_ms)
-      assert measurements.delay_ms > 0
-      assert measurements.attempt >= 1
-      assert metadata.pool_name == pool_name
-      assert metadata.reason == {:gun_down, :closed}
-
-      :telemetry.detach(handler_id)
-      GenServer.stop(worker_pid)
-    end
-
-    @tag timeout: 30_000
-    test "reconnect_attempt increments on successive disconnects", %{
-      config: config,
-      registry_name: registry_name,
-      pool_name: pool_name
-    } do
-      test_pid = self()
-      handler_id = "test-reconnect-increment-handler-#{:erlang.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :channel, :reconnect_scheduled],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
-
-      worker_opts = [
-        config: config,
-        registry_name: registry_name,
-        pool_name: pool_name
-      ]
-
-      {:ok, worker_pid} = Worker.start_link(worker_opts)
-      # Wait for connection attempt to complete/timeout (GRPC timeout is ~5s)
-      Process.sleep(6000)
-
-      # First disconnect
-      send(worker_pid, {:gun_down, make_ref(), :http2, :closed, []})
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :reconnect_scheduled],
-                      measurements1, _metadata},
-                     2000
-
-      # Attempt count depends on how many connection failures occurred before
-      # the disconnect. The important thing is it increments.
-      first_attempt = measurements1.attempt
-      assert first_attempt >= 1
-
-      # Wait for the reconnect attempt to fire and the connection to timeout.
-      # The backoff delay (~1-3s) + connect timeout (~5s) means we need to wait
-      # until the worker is idle again. We verify by calling status (GenServer.call
-      # will only return when the worker is not blocked in handle_info).
-      wait_for_worker_idle(worker_pid, 15_000)
-
-      # Second disconnect
-      send(worker_pid, {:gun_error, make_ref(), :timeout})
-
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :reconnect_scheduled],
-                      measurements2, _metadata},
-                     2000
-
-      assert measurements2.attempt == first_attempt + 1
-
-      :telemetry.detach(handler_id)
-      GenServer.stop(worker_pid)
-    end
-  end
-
-  describe "Ping telemetry events" do
-    setup do
-      registry_name = :"PingTelemetryTestRegistry_#{:erlang.unique_integer([:positive])}"
-      pool_name = :"PingTelemetryTestPool_#{:erlang.unique_integer([:positive])}"
-      {:ok, _} = Registry.start_link(keys: :duplicate, name: registry_name)
+    test "ping is a no-op (no event) when no channel is connected", ctx do
+      attach([[:grpc_connection_pool, :channel, :ping]])
 
       {:ok, config} =
-        Config.local(
-          host: "localhost",
-          port: 9999,
-          pool_size: 1,
-          connection: [ping_interval: 50]
+        Config.new(
+          endpoint: [type: :local, host: "localhost", port: 9999],
+          pool: [size: 1],
+          connection: [ping_interval: 50, max_reconnect_attempts: 1_000]
         )
 
-      on_exit(fn ->
-        case Process.whereis(registry_name) do
-          pid when is_pid(pid) ->
-            Process.unlink(pid)
-            Process.exit(pid, :kill)
+      {:ok, worker_pid} =
+        Worker.start_link(
+          config: config,
+          registry_name: ctx.registry_name,
+          pool_name: ctx.pool_name
+        )
 
-          _ ->
-            :ok
-        end
-      end)
-
-      %{config: config, registry_name: registry_name, pool_name: pool_name}
-    end
-
-    @tag timeout: 20_000
-    test "ping telemetry event is not emitted when channel is nil (no-op)", %{
-      config: config,
-      registry_name: registry_name,
-      pool_name: pool_name
-    } do
-      test_pid = self()
-      handler_id = "test-ping-handler-#{:erlang.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:grpc_connection_pool, :channel, :ping],
-        fn event_name, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event_name, measurements, metadata})
-        end,
-        nil
-      )
-
-      worker_opts = [
-        config: config,
-        registry_name: registry_name,
-        pool_name: pool_name
-      ]
-
-      {:ok, worker_pid} = Worker.start_link(worker_opts)
-
-      # Wait for connection attempt to complete/timeout (GRPC timeout is ~5s)
-      Process.sleep(6000)
-
-      # Manually trigger ping
-      # When no channel is connected, ping on nil channel returns early
-      # without telemetry
+      # Dead port + retry: 0 -> connect fails fast -> channel stays nil.
+      assert TestServer.wait_until(fn -> Worker.status(worker_pid) == :disconnected end, 1_000)
       send(worker_pid, :ping)
+      refute_receive {:telemetry, [:grpc_connection_pool, :channel, :ping], _, _}, 300
 
-      # Give time for the message to be processed
-      Process.sleep(100)
-
-      # Since no channel is connected, ping on nil channel returns early
-      # without telemetry. Let's verify by waiting briefly
-      refute_receive {:telemetry, [:grpc_connection_pool, :channel, :ping], _, _}, 500
-
-      :telemetry.detach(handler_id)
       GenServer.stop(worker_pid)
     end
   end
 
-  describe "Telemetry event structure validation" do
-    test "all new telemetry events follow the expected structure" do
-      # This test documents the expected telemetry event structure
+  # Note: the live event shapes (connection_down, disconnected, reconnect_scheduled,
+  # connected, pool init) are asserted directly in the real-drop and pool-init tests
+  # above, so there is no separate hand-built "structure" test (it would be tautological).
 
-      # [:grpc_connection_pool, :channel, :ping]
-      ping_measurements = %{duration: 12_345}
-      ping_metadata = %{pool_name: :test_pool, result: :ok}
-      assert Map.has_key?(ping_measurements, :duration)
-      assert Map.has_key?(ping_metadata, :pool_name)
-      assert Map.has_key?(ping_metadata, :result)
-      assert ping_metadata.result in [:ok, :error]
+  # --- helpers ---
 
-      # [:grpc_connection_pool, :channel, :gun_down]
-      gun_down_measurements = %{}
-      gun_down_metadata = %{pool_name: :test_pool, reason: :closed, protocol: :http2}
-      assert gun_down_measurements == %{}
-      assert Map.has_key?(gun_down_metadata, :pool_name)
-      assert Map.has_key?(gun_down_metadata, :reason)
-      assert Map.has_key?(gun_down_metadata, :protocol)
+  defp start_pool!(port, pool_name) do
+    {:ok, config} =
+      Config.new(
+        endpoint: [type: :local, host: "localhost", port: port],
+        pool: [size: 1, name: pool_name],
+        # No ping (monitor is the detector) + short backoff so reconnect is quick.
+        connection: [ping_interval: nil, backoff_min: 200]
+      )
 
-      # [:grpc_connection_pool, :channel, :gun_error]
-      gun_error_measurements = %{}
-      gun_error_metadata = %{pool_name: :test_pool, reason: :stream_error}
-      assert gun_error_measurements == %{}
-      assert Map.has_key?(gun_error_metadata, :pool_name)
-      assert Map.has_key?(gun_error_metadata, :reason)
-
-      # [:grpc_connection_pool, :channel, :reconnect_scheduled]
-      reconnect_measurements = %{delay_ms: 1000, attempt: 1}
-      reconnect_metadata = %{pool_name: :test_pool, reason: {:gun_down, :closed}}
-      assert Map.has_key?(reconnect_measurements, :delay_ms)
-      assert Map.has_key?(reconnect_measurements, :attempt)
-      assert is_integer(reconnect_measurements.delay_ms)
-      assert is_integer(reconnect_measurements.attempt)
-      assert Map.has_key?(reconnect_metadata, :pool_name)
-      assert Map.has_key?(reconnect_metadata, :reason)
-
-      # [:grpc_connection_pool, :pool, :init]
-      init_measurements = %{pool_size: 5}
-      init_metadata = %{pool_name: :test_pool, endpoint: "localhost:9999"}
-      assert Map.has_key?(init_measurements, :pool_size)
-      assert is_integer(init_measurements.pool_size)
-      assert Map.has_key?(init_metadata, :pool_name)
-      assert Map.has_key?(init_metadata, :endpoint)
-      assert is_binary(init_metadata.endpoint)
-    end
+    {:ok, _} = Pool.start_link(config, name: pool_name)
+    assert :ok = Pool.await_ready(pool_name, 5_000)
   end
 
-  # Waits until the worker GenServer is idle (not blocked in a synchronous
-  # handle_info like GRPC.Stub.connect). A GenServer.call will only return
-  # once the worker has finished processing the current message.
-  defp wait_for_worker_idle(pid, timeout) do
-    task =
-      Task.async(fn ->
-        Worker.status(pid)
-      end)
+  defp attach(events) do
+    test_pid = self()
+    handler_id = "tele-#{System.unique_integer([:positive])}"
 
-    Task.await(task, timeout)
+    :telemetry.attach_many(
+      handler_id,
+      events,
+      fn event, meas, meta, _ -> send(test_pid, {:telemetry, event, meas, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    :ok
+  end
+
+  defp safe_stop(pool_name) do
+    Pool.stop(pool_name)
+  catch
+    :exit, _ -> :ok
   end
 end

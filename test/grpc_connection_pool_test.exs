@@ -30,9 +30,11 @@ defmodule GrpcConnectionPoolTest do
 
   describe "pool management" do
     setup do
-      # Create a config for local testing
-      {:ok, config} = Config.local(host: "localhost", port: 8085, pool_size: 2)
-      pool_name = :"test_pool_#{:rand.uniform(10000)}"
+      # Port 9999 must be closed: these tests assert "no server running" behavior.
+      # (8085 was used previously but collides with the Pub/Sub emulator; with the
+      # grpc 1.0 fast-fail connect a live 8085 now connects before the assertion.)
+      {:ok, config} = Config.local(host: "localhost", port: 9999, pool_size: 2)
+      pool_name = :"test_pool_#{System.unique_integer([:positive])}"
 
       %{config: config, pool_name: pool_name}
     end

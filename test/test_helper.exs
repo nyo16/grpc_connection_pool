@@ -1,5 +1,5 @@
-# Start the GRPC Client Supervisor as required by grpc >= 0.11.0
-{:ok, _pid} = DynamicSupervisor.start_link(strategy: :one_for_one, name: GRPC.Client.Supervisor)
+# grpc >= 1.0 starts GRPC.Client.Supervisor itself via GRPC.Client.Application,
+# so no manual supervisor start is needed here.
 
 # `:emulator`-tagged tests are opt-in integration tests that require a live
 # Google Pub/Sub emulator on localhost:8085. Exclude them by default so a plain

@@ -9,10 +9,26 @@ defmodule GrpcConnectionPool.Worker do
   Features:
   - Channels stored in ETS for O(1) pool access (no GenServer.call in hot path)
   - Automatic reconnection with exponential backoff and jitter
-  - Active disconnect detection (gun_down/gun_error messages)
+  - Active disconnect detection by monitoring the gRPC connection process
   - Self-registration in Registry for health tracking
   - Optional periodic ping to keep connections warm
   - Configurable max reconnect attempts before crash
+
+  ## Disconnect detection (grpc 1.0)
+
+  grpc 1.0's Gun adapter owns the socket inside its own supervised
+  `GRPC.Client.Adapters.Gun.ConnectionProcess`, so gun's `:gun_down`/`:gun_error`
+  messages no longer reach this worker. Worse, when the connection drops the inner
+  gun process dies but the `ConnectionProcess` (the `conn_pid` in
+  `channel.adapter_payload`) lingers as a zombie — so monitoring `conn_pid` cannot
+  detect a drop.
+
+  Instead we monitor the **inner gun process**, read out of the adapter's
+  `ConnectionProcess` state, and pair it with `adapter_opts: [retry: 0]` (see
+  `GrpcConnectionPool.Config`) so gun gives up immediately on a drop and this
+  pool's own `Backoff` governs reconnection. Reaching into the adapter state
+  couples us to a grpc internal; it is guarded and falls back to monitoring
+  `conn_pid` if the state shape changes.
   """
   use GenServer
   require Logger
@@ -32,7 +48,8 @@ defmodule GrpcConnectionPool.Worker do
       :ets_table,
       :connection_start,
       :reconnect_attempt,
-      :slot_index
+      :slot_index,
+      :conn_monitor_ref
     ]
   end
 
@@ -87,7 +104,8 @@ defmodule GrpcConnectionPool.Worker do
       ets_table: ets_table,
       connection_start: nil,
       reconnect_attempt: 0,
-      slot_index: nil
+      slot_index: nil,
+      conn_monitor_ref: nil
     }
 
     {:ok, state}
@@ -111,6 +129,10 @@ defmodule GrpcConnectionPool.Worker do
         now = System.monotonic_time()
 
         Logger.debug("gRPC connection established for pool #{inspect(state.pool_name)}")
+
+        # Monitor the connection so a drop triggers reconnection. We monitor the
+        # inner gun process (which dies on drop), not the lingering conn_pid.
+        conn_monitor_ref = monitor_connection(channel)
 
         # Register in Registry for health tracking
         Registry.register(state.registry_name, :channels, nil)
@@ -148,7 +170,8 @@ defmodule GrpcConnectionPool.Worker do
              backoff_state: new_backoff,
              connection_start: now,
              reconnect_attempt: 0,
-             slot_index: slot
+             slot_index: slot,
+             conn_monitor_ref: conn_monitor_ref
          }}
 
       {:error, reason} ->
@@ -217,48 +240,29 @@ defmodule GrpcConnectionPool.Worker do
     end
   end
 
-  # Active disconnect detection — Gun adapter
-  def handle_info({:gun_down, _conn_pid, protocol, reason, _killed_streams}, state) do
+  # Active disconnect detection — the monitored gRPC connection process died.
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %State{conn_monitor_ref: ref} = state
+      ) do
     :telemetry.execute(
-      [:grpc_connection_pool, :channel, :gun_down],
-      %{},
-      %{pool_name: state.pool_name, reason: reason, protocol: protocol}
-    )
-
-    unless state.config.connection.suppress_connection_errors do
-      Logger.debug(
-        "gRPC connection closed by server for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
-      )
-    end
-
-    handle_disconnect(state, {:gun_down, reason})
-  end
-
-  def handle_info({:gun_error, _conn_pid, reason}, state) do
-    :telemetry.execute(
-      [:grpc_connection_pool, :channel, :gun_error],
+      [:grpc_connection_pool, :channel, :connection_down],
       %{},
       %{pool_name: state.pool_name, reason: reason}
     )
 
     unless state.config.connection.suppress_connection_errors do
-      Logger.error(
-        "Gun connection error for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
+      Logger.debug(
+        "gRPC connection down for pool #{inspect(state.pool_name)}: #{inspect(reason)}"
       )
     end
 
-    handle_disconnect(state, {:gun_error, reason})
+    handle_disconnect(state, {:connection_down, reason})
   end
 
-  def handle_info({:gun_up, _conn_pid, _protocol}, state) do
-    Logger.debug("Gun connection is up for pool #{inspect(state.pool_name)}")
+  # A DOWN we no longer care about (already torn down / demonitored late). Ignore.
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     {:noreply, state}
-  end
-
-  # Active disconnect detection — Mint adapter
-  def handle_info({:elixir_grpc, :connection_down, _pid}, state) do
-    Logger.debug("Mint gRPC connection down for pool #{inspect(state.pool_name)}")
-    handle_disconnect(state, :mint_connection_down)
   end
 
   def handle_info({:EXIT, _pid, _reason}, state) do
@@ -279,13 +283,22 @@ defmodule GrpcConnectionPool.Worker do
     GRPC.Stub.connect("#{host}:#{port}", opts)
   end
 
-  defp send_ping(channel) do
-    case channel do
-      %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
-        if Process.alive?(pid), do: :ok, else: :error
+  # The connection monitor is the primary drop detector; this ping is a warm-keep
+  # plus backstop. It checks the inner gun process (the thing that actually dies on
+  # a drop) rather than conn_pid, which lingers as a zombie.
+  defp send_ping(%GRPC.Channel{adapter_payload: %{conn_pid: conn_pid}}) when is_pid(conn_pid) do
+    if Process.alive?(conn_pid), do: gun_alive?(conn_pid), else: :error
+  end
 
-      _ ->
-        :error
+  defp send_ping(_channel), do: :error
+
+  # Liveness of the inner gun process. If it can't be introspected we return :ok to
+  # avoid false reconnects — the connection monitor (on the gun pid, set at connect)
+  # is the primary drop detector; this ping is only a warm-keep + backstop.
+  defp gun_alive?(conn_pid) do
+    case gun_pid(conn_pid) do
+      pid when is_pid(pid) -> if Process.alive?(pid), do: :ok, else: :error
+      _ -> :ok
     end
   end
 
@@ -310,18 +323,13 @@ defmodule GrpcConnectionPool.Worker do
   defp cleanup_connection(%State{channel: channel, ping_timer: timer}) do
     cancel_ping_timer(timer)
 
+    # GRPC.Stub.disconnect/1 is the correct teardown under grpc 1.0 — it stops the
+    # adapter's ConnectionProcess (reaping the zombie left behind after a drop) and
+    # is safe/idempotent on an already-dropped channel. Guarded because this is a
+    # best-effort teardown path that must never crash terminate/2.
     try do
-      case channel do
-        %GRPC.Channel{adapter_payload: %{conn_pid: pid}} when is_pid(pid) ->
-          if Process.alive?(pid) do
-            :gun.close(pid)
-          end
-
-        _ ->
-          GRPC.Stub.disconnect(channel)
-      end
+      GRPC.Stub.disconnect(channel)
     rescue
-      FunctionClauseError -> :ok
       _ -> :ok
     catch
       :exit, _ -> :ok
@@ -352,6 +360,10 @@ defmodule GrpcConnectionPool.Worker do
   # Unified disconnect handling
   defp handle_disconnect(%State{} = state, reason) do
     now = System.monotonic_time()
+
+    # Drop the connection monitor and flush any DOWN already in the mailbox so a
+    # stale DOWN can't trigger a second disconnect after we've torn down.
+    demonitor_connection(state)
 
     # Remove channel from ETS and Registry
     remove_channel_from_ets(state)
@@ -392,7 +404,42 @@ defmodule GrpcConnectionPool.Worker do
          backoff_state: new_backoff,
          connection_start: nil,
          reconnect_attempt: new_attempt,
-         slot_index: nil
+         slot_index: nil,
+         conn_monitor_ref: nil
      }}
+  end
+
+  # Monitors the connection so a drop triggers reconnection. grpc 1.0 keeps the live
+  # gun process *inside* the Gun adapter's ConnectionProcess and never exposes it;
+  # on a drop the gun process dies but ConnectionProcess lingers as a zombie, so we
+  # monitor gun directly. gun also dies when its owner (conn_pid) dies, so this
+  # covers conn_pid crashes too. Falls back to monitoring conn_pid if the inner gun
+  # pid can't be read (grpc internal state shape changed).
+  defp monitor_connection(%GRPC.Channel{adapter_payload: %{conn_pid: conn_pid}})
+       when is_pid(conn_pid) do
+    Process.monitor(gun_pid(conn_pid) || conn_pid)
+  end
+
+  defp monitor_connection(_channel), do: nil
+
+  defp demonitor_connection(%State{conn_monitor_ref: nil}), do: :ok
+
+  defp demonitor_connection(%State{conn_monitor_ref: ref}) do
+    Process.demonitor(ref, [:flush])
+    :ok
+  end
+
+  # Reads the inner gun pid out of the Gun adapter's ConnectionProcess state. This
+  # couples us to a grpc internal (state shape %{gun_pid: pid, ...}); guarded and
+  # short-timed so a busy/dead ConnectionProcess can't block or crash the worker.
+  defp gun_pid(conn_pid) do
+    case :sys.get_state(conn_pid, 1_000) do
+      %{gun_pid: gun_pid} when is_pid(gun_pid) -> gun_pid
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
 end
