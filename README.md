@@ -68,7 +68,7 @@ Add `grpc_connection_pool` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:grpc_connection_pool, "~> 0.4.0"},
+    {:grpc_connection_pool, "~> 0.5.0"},
     {:grpc, "~> 1.0"},  # Required peer dependency
     {:gun, "~> 2.2"}    # grpc >= 1.0 makes gun optional; the default Gun adapter needs it
   ]
@@ -77,7 +77,7 @@ end
 
 > **grpc 1.0:** this library targets grpc `~> 1.0`, which is client-only and makes
 > `:gun` an optional dependency. Since the pool uses the default Gun adapter, add
-> `:gun` explicitly. See the [Changelog](CHANGELOG.md) for the 0.4.0 migration notes
+> `:gun` explicitly. See the [Changelog](CHANGELOG.md) for the 0.5.0 migration notes
 > (telemetry event change, disconnect-detection rework).
 
 ## Quick Start
@@ -732,7 +732,7 @@ The library emits telemetry events for observability. Attach handlers to monitor
 | `[:grpc_connection_pool, :channel, :connection_down]` | - | `pool_name`, `reason` |
 | `[:grpc_connection_pool, :channel, :reconnect_scheduled]` | `delay_ms`, `attempt` | `pool_name`, `reason` |
 
-> **Changed in 0.4.0 (grpc 1.0):** the `:gun_down` and `:gun_error` events were
+> **Changed in 0.5.0 (grpc 1.0):** the `:gun_down` and `:gun_error` events were
 > removed. Under grpc 1.0 the Gun adapter owns the socket in its own process and
 > those gun messages never reach the pool. A single adapter-agnostic
 > `:channel, :connection_down` event (metadata `pool_name`, `reason`) is now emitted

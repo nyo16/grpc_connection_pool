@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-06-26
+## [0.5.0] - 2026-06-26
 
 ### Changed
 - **grpc 1.0 support.** Bumped `grpc` to `~> 1.0` (was `0.11.5`). grpc 1.0 is
@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `adapter_opts: [retry: 0]` so gun fails fast on a drop and the pool's own
   `Backoff` governs reconnection. This also restores fast-fail connects (a dead
   endpoint now errors in ~0ms instead of stalling ~5s per attempt).
+
+### Fixed
+- **License declaration** now correctly reports **Apache-2.0** (matching the committed
+  `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
+  mismatch (#6).
+
+## [0.4.0] - 2026-06-01
+
+### Changed
 - **Security:** production configs now default to verifying TLS. `Config.production/1`
   sets `verify: :verify_peer`, and a `:production` endpoint built without `ssl`/`credentials`
   no longer silently downgrades to plaintext h2c — it raises a clear configuration error.
@@ -35,9 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   swallowed; demoted expected reconnect/retry logs to `:debug`.
 
 ### Fixed
-- **License declaration** now correctly reports **Apache-2.0** (matching the committed
-  `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
-  mismatch (#6).
 - Documentation: replaced README examples referencing a non-existent
   `GrpcConnectionPool.execute/1` with the real `get_channel/1` + stub-call pattern;
   corrected the stale install snippet and the `:get_channel` telemetry/strategy docs.

@@ -76,9 +76,15 @@ defmodule GrpcConnectionPool.TestServer do
 
   defp do_wait_until(fun, deadline) do
     cond do
-      fun.() -> true
-      System.monotonic_time(:millisecond) >= deadline -> false
-      true -> Process.sleep(25) && do_wait_until(fun, deadline)
+      fun.() ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        Process.sleep(25)
+        do_wait_until(fun, deadline)
     end
   end
 
