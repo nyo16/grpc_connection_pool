@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-26
+
+### Fixed
+- **Docs:** documented the one supervision-tree change grpc 1.0 requires — a leftover
+  `{GRPC.Client.Supervisor, []}` child spec now crashes at boot, because grpc 1.0 removed
+  that module and starts a `DynamicSupervisor` under the same name itself. Consumers were
+  reading the crash as an unfixable version conflict and pinning grpc back to 0.11.x. See
+  the install note and the Troubleshooting entry in the README, plus the 0.5.0 upgrade
+  notes below.
+- `mix docs` is warning-free again: qualified `GrpcConnectionPool.Config.production/1` and
+  removed the autolink to the (deliberately) nonexistent `execute/1` in the 0.4.0 entries.
+
+### Changed
+- `CHANGELOG.md` is now shipped in the Hex package (it was already a docs extra).
+- **Dialyzer filters** (`.dialyzer_ignore.exs`, wired up via `ignore_warnings` +
+  `list_unused_filters`): grpc 1.0.2 extracted `finalize_connection/2` out of
+  `GRPC.Client.Connection.connect/2`, and analyzed alone that function's success typing
+  rejects the still-`nil` virtual channel `connect/2` passes it. Dialyzer concludes the
+  call never returns, narrows `GRPC.Stub.connect/2` to `{:error, _}`, and then flags the
+  pool's success branch and `monitor_connection/1` as dead code. Both warnings are false
+  — the suite connects for real — so they are filtered with an explanation. A stale
+  filter is a hard error, so the suppression expires when grpc fixes the typing.
+- **Dependencies refreshed** (`mix deps.update --all`): `grpc` 1.0.1 → 1.0.2 and
+  `gun` 2.2.0 → 2.4.1 — grpc 1.0.1 constrained gun to `~> 2.2.0`, and 1.0.2 relaxes it, so
+  gun could finally move. Test/dev only: `cowboy` 2.14.2 → 2.17.0, `cowlib` 2.16.0 → 2.18.0,
+  `finch` 0.20.0 → 0.23.0, `mint` 1.9.0 → 1.9.3, `hpax` 1.0.3 → 1.0.4, `jose` 1.11.10 →
+  1.11.12, plus `erlex`, `earmark_parser`, and `makeup` patches. Full suite green on
+  Elixir 1.20 / OTP 29, including the `:emulator` integration tests.
+
 ## [0.5.0] - 2026-06-26
 
 ### Changed
@@ -28,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Backoff` governs reconnection. This also restores fast-fail connects (a dead
   endpoint now errors in ~0ms instead of stalling ~5s per attempt).
 
+### Upgrade notes
+- **Remove `{GRPC.Client.Supervisor, []}` from your supervision tree.** grpc 1.0 deleted
+  that module; the name is now just the registered name of a `DynamicSupervisor` that
+  grpc starts itself (in GRPC.Client.Application). Keeping the old child spec (which pre-1.0
+  grpc's README recommended) crashes at boot with *"The module GRPC.Client.Supervisor was
+  given as a child to a supervisor but it does not exist"*. Nothing replaces it — no
+  manual start is needed in applications or in `test_helper.exs`. This is the only
+  supervision-tree change required to move a `grpc_connection_pool` consumer from grpc
+  0.11.x to 1.0.
+
 ### Fixed
 - **License declaration** now correctly reports **Apache-2.0** (matching the committed
   `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
@@ -36,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-06-01
 
 ### Changed
-- **Security:** production configs now default to verifying TLS. `Config.production/1`
+- **Security:** production configs now default to verifying TLS. `GrpcConnectionPool.Config.production/1`
   sets `verify: :verify_peer`, and a `:production` endpoint built without `ssl`/`credentials`
   no longer silently downgrades to plaintext h2c — it raises a clear configuration error.
 - Narrowed several broad `rescue`/`catch` clauses (`Pool.scale_up/scale_down`,
@@ -45,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Documentation: replaced README examples referencing a non-existent
-  `GrpcConnectionPool.execute/1` with the real `get_channel/1` + stub-call pattern;
+  GrpcConnectionPool.execute/1 with the real `get_channel/1` + stub-call pattern;
   corrected the stale install snippet and the `:get_channel` telemetry/strategy docs.
 
 ## [0.3.5] - 2026-06-01

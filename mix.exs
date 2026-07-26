@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.5.1"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -19,7 +19,11 @@ defmodule GrpcConnectionPool.MixProject do
       test_coverage: [tool: ExCoveralls],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        plt_add_apps: [:mix, :ex_unit]
+        plt_add_apps: [:mix, :ex_unit],
+        # See .dialyzer_ignore.exs for why each filter exists. list_unused_filters
+        # turns a stale filter into an error, so suppressions can't outlive their cause.
+        ignore_warnings: ".dialyzer_ignore.exs",
+        list_unused_filters: true
       ]
     ]
   end
@@ -58,7 +62,7 @@ defmodule GrpcConnectionPool.MixProject do
   defp package do
     [
       description: description(),
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG*),
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
