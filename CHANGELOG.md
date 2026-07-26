@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `CHANGELOG.md` is now shipped in the Hex package (it was already a docs extra).
+- **Dialyzer filters** (`.dialyzer_ignore.exs`, wired up via `ignore_warnings` +
+  `list_unused_filters`): grpc 1.0.2 extracted `finalize_connection/2` out of
+  `GRPC.Client.Connection.connect/2`, and analyzed alone that function's success typing
+  rejects the still-`nil` virtual channel `connect/2` passes it. Dialyzer concludes the
+  call never returns, narrows `GRPC.Stub.connect/2` to `{:error, _}`, and then flags the
+  pool's success branch and `monitor_connection/1` as dead code. Both warnings are false
+  — the suite connects for real — so they are filtered with an explanation. A stale
+  filter is a hard error, so the suppression expires when grpc fixes the typing.
 - **Dependencies refreshed** (`mix deps.update --all`): `grpc` 1.0.1 → 1.0.2 and
   `gun` 2.2.0 → 2.4.1 — grpc 1.0.1 constrained gun to `~> 2.2.0`, and 1.0.2 relaxes it, so
   gun could finally move. Test/dev only: `cowboy` 2.14.2 → 2.17.0, `cowlib` 2.16.0 → 2.18.0,

@@ -19,7 +19,11 @@ defmodule GrpcConnectionPool.MixProject do
       test_coverage: [tool: ExCoveralls],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        plt_add_apps: [:mix, :ex_unit]
+        plt_add_apps: [:mix, :ex_unit],
+        # See .dialyzer_ignore.exs for why each filter exists. list_unused_filters
+        # turns a stale filter into an error, so suppressions can't outlive their cause.
+        ignore_warnings: ".dialyzer_ignore.exs",
+        list_unused_filters: true
       ]
     ]
   end
