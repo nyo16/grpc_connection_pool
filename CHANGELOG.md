@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `CHANGELOG.md` is now shipped in the Hex package (it was already a docs extra).
+- **Dependencies refreshed** (`mix deps.update --all`): `grpc` 1.0.1 → 1.0.2 and
+  `gun` 2.2.0 → 2.4.1 — grpc 1.0.1 constrained gun to `~> 2.2.0`, and 1.0.2 relaxes it, so
+  gun could finally move. Test/dev only: `cowboy` 2.14.2 → 2.17.0, `cowlib` 2.16.0 → 2.18.0,
+  `finch` 0.20.0 → 0.23.0, `mint` 1.9.0 → 1.9.3, `hpax` 1.0.3 → 1.0.4, `jose` 1.11.10 →
+  1.11.12, plus `erlex`, `earmark_parser`, and `makeup` patches. Full suite green on
+  Elixir 1.20 / OTP 29, including the `:emulator` integration tests.
 
 ## [0.5.0] - 2026-06-26
 
