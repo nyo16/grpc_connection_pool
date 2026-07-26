@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Backoff` governs reconnection. This also restores fast-fail connects (a dead
   endpoint now errors in ~0ms instead of stalling ~5s per attempt).
 
+### Upgrade notes
+- **Remove `{GRPC.Client.Supervisor, []}` from your supervision tree.** grpc 1.0 deleted
+  that module; the name is now just the registered name of a `DynamicSupervisor` that
+  grpc starts itself (in GRPC.Client.Application). Keeping the old child spec (which pre-1.0
+  grpc's README recommended) crashes at boot with *"The module GRPC.Client.Supervisor was
+  given as a child to a supervisor but it does not exist"*. Nothing replaces it — no
+  manual start is needed in applications or in `test_helper.exs`. This is the only
+  supervision-tree change required to move a `grpc_connection_pool` consumer from grpc
+  0.11.x to 1.0.
+
 ### Fixed
 - **License declaration** now correctly reports **Apache-2.0** (matching the committed
   `LICENSE` file) instead of MIT in `mix.exs` and README — resolves the Hex.pm
@@ -36,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-06-01
 
 ### Changed
-- **Security:** production configs now default to verifying TLS. `Config.production/1`
+- **Security:** production configs now default to verifying TLS. `GrpcConnectionPool.Config.production/1`
   sets `verify: :verify_peer`, and a `:production` endpoint built without `ssl`/`credentials`
   no longer silently downgrades to plaintext h2c — it raises a clear configuration error.
 - Narrowed several broad `rescue`/`catch` clauses (`Pool.scale_up/scale_down`,
@@ -45,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Documentation: replaced README examples referencing a non-existent
-  `GrpcConnectionPool.execute/1` with the real `get_channel/1` + stub-call pattern;
+  GrpcConnectionPool.execute/1 with the real `get_channel/1` + stub-call pattern;
   corrected the stale install snippet and the `:get_channel` telemetry/strategy docs.
 
 ## [0.3.5] - 2026-06-01

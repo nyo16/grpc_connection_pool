@@ -58,7 +58,7 @@ defmodule GrpcConnectionPool.MixProject do
   defp package do
     [
       description: description(),
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG*),
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,

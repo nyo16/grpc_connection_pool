@@ -79,6 +79,13 @@ end
 > `:gun` an optional dependency. Since the pool uses the default Gun adapter, add
 > `:gun` explicitly. See the [Changelog](CHANGELOG.md) for the 0.5.0 migration notes
 > (telemetry event change, disconnect-detection rework).
+>
+> **Do not start `GRPC.Client.Supervisor` yourself.** Pre-1.0 grpc documented adding
+> `{GRPC.Client.Supervisor, []}` to your supervision tree. In grpc 1.0 that module no
+> longer exists — `GRPC.Client.Supervisor` is only the registered *name* of a
+> `DynamicSupervisor` that grpc starts for you in its own application callback. Leaving
+> the old child spec in place fails at boot; see
+> [Troubleshooting](#boot-crash-stale-grpc-client-supervisor-child-spec).
 
 ## Quick Start
 
@@ -999,6 +1006,32 @@ config :my_app, GrpcConnectionPool,
 ```
 
 The worker processes will still reconnect with backoff and the pool will automatically recover.
+
+### Boot crash: stale grpc client supervisor child spec
+
+After upgrading to grpc 1.0 (i.e. `grpc_connection_pool ~> 0.5`), an application — or an
+intermediate library that wraps this pool — can fail to start with:
+
+```
+** (RuntimeError) The module GRPC.Client.Supervisor was given as a child to a
+   supervisor but it does not exist
+```
+
+This is *not* a version conflict and does not require pinning grpc back to 0.11.x. grpc
+1.0 removed the `GRPC.Client.Supervisor` module; the name now belongs to a
+`DynamicSupervisor` that grpc starts itself (in GRPC.Client.Application) when the `:grpc`
+application boots. The fix is to delete the manual child spec:
+
+```elixir
+children = [
+  MyApp.SomeCache,
+  # {GRPC.Client.Supervisor, []},   # <- remove: grpc 1.0 starts this itself
+  {GrpcConnectionPool, config}
+]
+```
+
+Nothing replaces it — the pool's channels are supervised by grpc under that name either
+way. Same applies in tests: `test/test_helper.exs` needs no manual supervisor start.
 
 ## Contributing
 
