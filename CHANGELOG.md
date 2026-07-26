@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-26
+
+### Fixed
+- **Docs:** documented the one supervision-tree change grpc 1.0 requires — a leftover
+  `{GRPC.Client.Supervisor, []}` child spec now crashes at boot, because grpc 1.0 removed
+  that module and starts a `DynamicSupervisor` under the same name itself. Consumers were
+  reading the crash as an unfixable version conflict and pinning grpc back to 0.11.x. See
+  the install note and the Troubleshooting entry in the README, plus the 0.5.0 upgrade
+  notes below.
+- `mix docs` is warning-free again: qualified `GrpcConnectionPool.Config.production/1` and
+  removed the autolink to the (deliberately) nonexistent `execute/1` in the 0.4.0 entries.
+
+### Changed
+- `CHANGELOG.md` is now shipped in the Hex package (it was already a docs extra).
+
 ## [0.5.0] - 2026-06-26
 
 ### Changed
