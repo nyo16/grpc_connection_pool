@@ -12,19 +12,33 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
   @moduletag :telemetry
 
+  # These are ceilings for events that arrive in single-digit milliseconds on an idle
+  # machine, not measurements of expected latency. CI runs on 2-vCPU shared runners
+  # where an unlucky scheduling window can stall a connect well past a 2s deadline, so
+  # a tight bound buys nothing and flakes intermittently. A generous ceiling costs a
+  # fast machine nothing (the assertion returns as soon as the event lands) and only
+  # spends real time when the test is genuinely going to fail.
+  @event_timeout 15_000
+  @ready_timeout 30_000
+
   describe "pool telemetry events" do
     test "pool init event is emitted" do
       pool_name = :"TelemetryInit_#{System.unique_integer([:positive])}"
       attach([[:grpc_connection_pool, :pool, :init]])
 
-      {:ok, config} = Config.local(host: "localhost", port: 9999, pool_size: 2)
+      # Init telemetry fires before any connect, so the endpoint only has to be
+      # closed — not blackholed. See TestServer.dead_port/0.
+      port = TestServer.dead_port()
+      {:ok, config} = Config.local(host: "localhost", port: port, pool_size: 2)
       {:ok, _} = Pool.start_link(config, name: pool_name)
       on_exit(fn -> safe_stop(pool_name) end)
 
-      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :init], meas, meta}, 1_000
+      assert_receive {:telemetry, [:grpc_connection_pool, :pool, :init], meas, meta},
+                     @event_timeout
+
       assert meas.pool_size == 2
       assert meta.pool_name == pool_name
-      assert meta.endpoint == "localhost:9999"
+      assert meta.endpoint == "localhost:#{port}"
     end
   end
 
@@ -51,13 +65,15 @@ defmodule GrpcConnectionPool.TelemetryTest do
       ])
 
       start_pool!(ctx.port, ctx.pool_name)
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _},
+                     @event_timeout
 
       TestServer.drop_connections(ctx.ref)
 
       assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connection_down], cd_meas,
                       cd_meta},
-                     2_000
+                     @event_timeout
 
       assert cd_meas == %{}
       assert cd_meta.pool_name == ctx.pool_name
@@ -65,7 +81,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
       assert_receive {:telemetry, [:grpc_connection_pool, :channel, :disconnected], dis_meas,
                       dis_meta},
-                     2_000
+                     @event_timeout
 
       assert is_integer(dis_meas.duration)
       assert dis_meta.pool_name == ctx.pool_name
@@ -73,7 +89,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
       assert_receive {:telemetry, [:grpc_connection_pool, :channel, :reconnect_scheduled],
                       rs_meas, rs_meta},
-                     2_000
+                     @event_timeout
 
       assert is_integer(rs_meas.delay_ms) and rs_meas.delay_ms > 0
       assert rs_meas.attempt >= 1
@@ -87,16 +103,18 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
       start_pool!(ctx.port, ctx.pool_name)
       # initial connect
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _},
+                     @event_timeout
 
       TestServer.drop_connections(ctx.ref)
 
       # reconnect to the still-listening server
-      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _}, 5_000
+      assert_receive {:telemetry, [:grpc_connection_pool, :channel, :connected], _, _},
+                     @event_timeout
 
       assert TestServer.wait_until(
                fn -> match?({:ok, %GRPC.Channel{}}, Pool.get_channel(ctx.pool_name)) end,
-               2_000
+               @event_timeout
              )
     end
   end
@@ -126,7 +144,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
 
       {:ok, config} =
         Config.new(
-          endpoint: [type: :local, host: "localhost", port: 9999],
+          endpoint: [type: :local, host: "localhost", port: TestServer.dead_port()],
           pool: [size: 1],
           connection: [ping_interval: 50, max_reconnect_attempts: 1_000]
         )
@@ -139,7 +157,11 @@ defmodule GrpcConnectionPool.TelemetryTest do
         )
 
       # Dead port + retry: 0 -> connect fails fast -> channel stays nil.
-      assert TestServer.wait_until(fn -> Worker.status(worker_pid) == :disconnected end, 1_000)
+      assert TestServer.wait_until(
+               fn -> status_safe(worker_pid) == :disconnected end,
+               @event_timeout
+             )
+
       send(worker_pid, :ping)
       refute_receive {:telemetry, [:grpc_connection_pool, :channel, :ping], _, _}, 300
 
@@ -163,7 +185,7 @@ defmodule GrpcConnectionPool.TelemetryTest do
       )
 
     {:ok, _} = Pool.start_link(config, name: pool_name)
-    assert :ok = Pool.await_ready(pool_name, 5_000)
+    assert :ok = Pool.await_ready(pool_name, @ready_timeout)
   end
 
   defp attach(events) do
@@ -185,5 +207,15 @@ defmodule GrpcConnectionPool.TelemetryTest do
     Pool.stop(pool_name)
   catch
     :exit, _ -> :ok
+  end
+
+  # `Worker.status/1` is a GenServer.call. On a loaded runner the worker can be busy
+  # mid-connect and blow the default 5s call deadline, which *exits* and fails the test
+  # outright instead of just reporting "not there yet". Polling wants the latter, so a
+  # timed-out call is reported as an unknown status and the caller retries.
+  defp status_safe(worker_pid) do
+    Worker.status(worker_pid)
+  catch
+    :exit, _ -> :unknown
   end
 end
