@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
+  Test-only change — nothing in `lib/` moved, so the published package is unaffected.
+  Two causes, both fixed:
+  - The pool-scaling tests pointed their pools at a *closed* port. Those tests only
+    assert size bookkeeping, but a pool that cannot connect leaves every worker
+    (up to 20, resized repeatedly) in a ~100ms reconnect loop, and pools from
+    consecutive tests overlap while tearing down. The resulting background churn
+    starved the telemetry tests' deadlines. They now run against a live
+    `TestServer` listener, so workers connect once and go idle, and teardown stops
+    the pool before the listener.
+  - The telemetry deadlines were ceilings of 1–5s on events that land in single-digit
+    milliseconds. On a shared runner an unlucky scheduling window blows them for no
+    good reason, so they were widened; a generous ceiling costs a fast machine nothing.
+    `Worker.status/1` is a `GenServer.call`, and its timeout *exited* and failed the
+    test outright rather than reporting "not yet" — polling now treats a timed-out call
+    as an unknown status and retries.
+
 ## [0.5.2] - 2026-08-06
 
 ### Security

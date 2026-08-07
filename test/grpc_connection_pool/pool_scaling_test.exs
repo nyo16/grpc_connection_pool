@@ -7,13 +7,17 @@ defmodule GrpcConnectionPool.PoolScalingTest do
     # Use unique pool name for each test
     pool_name = :"ScalingTest.#{:erlang.unique_integer()}"
 
-    # These tests only exercise scaling bookkeeping, so workers never need to
-    # connect. Use a port that refuses rather than one that may be blackholed —
-    # see TestServer.dead_port/0.
+    # Point at a LIVE listener even though these tests only assert size bookkeeping.
+    # A pool aimed at a closed port leaves every worker in a ~100ms reconnect loop,
+    # and because pools from consecutive tests overlap during teardown, that background
+    # storm compounds across the file and starves the deadlines of timing-sensitive
+    # tests elsewhere in the suite. Connecting for real leaves the workers idle.
+    {ref, port} = TestServer.start!()
+
     {:ok, config} =
       GrpcConnectionPool.Config.local(
         host: "localhost",
-        port: TestServer.dead_port(),
+        port: port,
         pool_size: 5,
         pool_name: pool_name
       )
@@ -21,20 +25,20 @@ defmodule GrpcConnectionPool.PoolScalingTest do
     {:ok, _pid} = Pool.start_link(config, name: pool_name)
 
     on_exit(fn ->
-      # Give a small delay before stopping
-      Process.sleep(10)
-
-      # Force kill the supervisor if normal stop fails
-      supervisor_name = :"#{pool_name}.Supervisor"
-
-      case Process.whereis(supervisor_name) do
-        nil ->
-          :ok
-
-        pid ->
-          Process.exit(pid, :kill)
-          Process.sleep(10)
+      # Stop the pool before the listener so workers don't briefly retry against a
+      # dead port on the way out.
+      try do
+        Pool.stop(pool_name)
+      catch
+        :exit, _ -> :ok
       end
+
+      case Process.whereis(:"#{pool_name}.Supervisor") do
+        nil -> :ok
+        pid -> Process.exit(pid, :kill)
+      end
+
+      TestServer.stop(ref)
     end)
 
     %{pool_name: pool_name}
