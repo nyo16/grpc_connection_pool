@@ -68,7 +68,7 @@ Add `grpc_connection_pool` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:grpc_connection_pool, "~> 0.5.1"},
+    {:grpc_connection_pool, "~> 0.5.2"},
     {:grpc, "~> 1.0"},  # Required peer dependency
     {:gun, "~> 2.4"}    # grpc >= 1.0 makes gun optional; the default Gun adapter needs it
   ]
