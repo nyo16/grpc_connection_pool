@@ -31,10 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gun` stays at 2.4.1**, which is the latest release the pool can use: grpc 1.0.3 still
   requires `gun ~> 2.4.0`, so gun 2.5.0 is out of range on grpc 1.x. Confirmed by
   resolution, not by inspection — `mix deps.update gun` leaves 2.4.1 in place.
-- **Typespec:** `Pool.get_channel/1` now returns `{:ok, %GRPC.Channel{}}` instead of
-  `{:ok, GRPC.Channel.t()}`. grpc 1.0.3 removed the `@type t` from `GRPC.Channel`, leaving
-  the struct alone, so the named type no longer exists to reference. Runtime behaviour is
-  unchanged; only the spec's spelling moved.
+- **Raised the `:gun` requirement from `~> 2.2` to `~> 2.4`** (also updated in the README
+  install snippet). gun 2.4.0 is where `invalid_request_headers` landed — the validation
+  that mitigates CVE-2026-43966, which has no cowlib-side fix — so the floor is a security
+  boundary rather than housekeeping. Consumers on grpc 1.0 were already resolving to 2.4.x
+  because grpc requires `gun ~> 2.4.0`; this makes the real floor explicit and stops a
+  stale lock from silently sitting on 2.2.x.
+- **Typespec:** grpc 1.0.3 removed the `@type t` from `GRPC.Channel`, leaving the bare
+  struct with no named type to reference. `GrpcConnectionPool.Pool` now publishes its own
+  `@type channel :: %GRPC.Channel{}`, and `Pool.get_channel/1` specs `{:ok, channel()}`.
+  Runtime behaviour is unchanged; only the spec's spelling moved.
 - **Dialyzer filters removed, as designed.** grpc 1.0.3 fixed the `finalize_connection/2`
   success-typing regression that 1.0.2 introduced, so both entries in
   `.dialyzer_ignore.exs` went unused and `list_unused_filters: true` failed the build —
