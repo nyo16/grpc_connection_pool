@@ -119,7 +119,9 @@ defmodule GrpcConnectionPool.Pool do
       end
 
   """
-  @spec get_channel(atom()) :: {:ok, GRPC.Channel.t()} | {:error, :not_connected}
+  # `%GRPC.Channel{}` rather than `GRPC.Channel.t()`: grpc 1.0.3 dropped the
+  # `@type t` from the struct, so the named type no longer exists to reference.
+  @spec get_channel(atom()) :: {:ok, %GRPC.Channel{}} | {:error, :not_connected}
   def get_channel(pool_name \\ @default_pool_name) do
     {strategy_mod, strategy_state, ets_table, sample_rate} =
       :persistent_term.get({__MODULE__, pool_name, :strategy})

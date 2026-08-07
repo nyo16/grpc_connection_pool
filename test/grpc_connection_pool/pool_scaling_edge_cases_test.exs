@@ -1,15 +1,19 @@
 defmodule GrpcConnectionPool.PoolScalingEdgeCasesTest do
   use ExUnit.Case, async: false
   alias GrpcConnectionPool.Pool
+  alias GrpcConnectionPool.TestServer
 
   setup do
     # Use unique pool name for each test
     pool_name = :"EdgeCaseTest.#{:erlang.unique_integer()}"
 
+    # These tests only exercise scaling bookkeeping, so workers never need to
+    # connect. Use a port that refuses rather than one that may be blackholed —
+    # see TestServer.dead_port/0.
     {:ok, config} =
       GrpcConnectionPool.Config.local(
         host: "localhost",
-        port: 50_051,
+        port: TestServer.dead_port(),
         pool_size: 10,
         pool_name: pool_name
       )
