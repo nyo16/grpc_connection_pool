@@ -28,6 +28,28 @@ defmodule GrpcConnectionPool.TestServer do
     {ref, :ranch.get_port(ref)}
   end
 
+  @doc """
+  Returns a port with nothing listening on it, for tests that need connects to fail.
+
+  Binds port 0 (OS-assigned), reads the port back, then closes the socket, so a
+  connect to it fails immediately with `:econnrefused`.
+
+  Prefer this over hardcoding a port. The conventional gRPC port 50051 in
+  particular is frequently *blackholed* rather than closed — a Docker/OrbStack
+  port-forward, VPN, or packet filter silently drops the SYN, so a connect hangs
+  for the full connect timeout instead of being refused. Tests that expect a
+  fast failure then take seconds each, and pools that retry on a backoff loop
+  keep hammering in the background long enough to starve the deadlines of
+  unrelated tests that run after them.
+  """
+  @spec dead_port() :: :inet.port_number()
+  def dead_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+    port
+  end
+
   @doc "Stops the listener. Safe to call if already stopped."
   @spec stop(atom()) :: :ok
   def stop(ref) do

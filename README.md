@@ -68,9 +68,9 @@ Add `grpc_connection_pool` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:grpc_connection_pool, "~> 0.5.1"},
+    {:grpc_connection_pool, "~> 0.5.2"},
     {:grpc, "~> 1.0"},  # Required peer dependency
-    {:gun, "~> 2.2"}    # grpc >= 1.0 makes gun optional; the default Gun adapter needs it
+    {:gun, "~> 2.4"}    # grpc >= 1.0 makes gun optional; the default Gun adapter needs it
   ]
 end
 ```
@@ -79,6 +79,11 @@ end
 > `:gun` an optional dependency. Since the pool uses the default Gun adapter, add
 > `:gun` explicitly. See the [Changelog](CHANGELOG.md) for the 0.5.0 migration notes
 > (telemetry event change, disconnect-detection rework).
+>
+> **Why the gun floor is `~> 2.4`:** gun 2.4.0 added the `invalid_request_headers`
+> validation that mitigates CVE-2026-43966 (CRLF injection reachable through cowlib),
+> which has no cowlib-side fix. grpc 1.0 requires `gun ~> 2.4.0` anyway, so this only
+> makes the real floor explicit — gun 2.5.0 is out of range while you are on grpc 1.x.
 >
 > **Do not start `GRPC.Client.Supervisor` yourself.** Pre-1.0 grpc documented adding
 > `{GRPC.Client.Supervisor, []}` to your supervision tree. In grpc 1.0 that module no

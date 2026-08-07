@@ -37,6 +37,14 @@ defmodule GrpcConnectionPool.Pool do
 
   @default_pool_name __MODULE__
 
+  @typedoc """
+  A connected gRPC channel, as handed to a generated stub.
+
+  Aliased here because grpc 1.0.3 dropped `@type t` from `GRPC.Channel`, leaving the
+  bare struct with no named type to reference.
+  """
+  @type channel :: %GRPC.Channel{}
+
   # Child specification for supervision trees
 
   @doc """
@@ -119,7 +127,7 @@ defmodule GrpcConnectionPool.Pool do
       end
 
   """
-  @spec get_channel(atom()) :: {:ok, GRPC.Channel.t()} | {:error, :not_connected}
+  @spec get_channel(atom()) :: {:ok, channel()} | {:error, :not_connected}
   def get_channel(pool_name \\ @default_pool_name) do
     {strategy_mod, strategy_state, ets_table, sample_rate} =
       :persistent_term.get({__MODULE__, pool_name, :strategy})

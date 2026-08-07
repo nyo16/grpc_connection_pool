@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-08-06
+
+### Security
+- **`cowlib` 2.18.0 → 2.19.0 fixes CVE-2026-59248 (HIGH):** unbounded HPACK/QPACK
+  prefixed-integer decoding allowed a memory-exhaustion DoS. This one is squarely in
+  the pool's path — gRPC is HTTP/2, so gun decodes HPACK from whatever the *server*
+  sends, and a malicious or compromised endpoint could exhaust client memory. Upgrading
+  is recommended for all users.
+- **`cowboy` 2.17.0 → 2.18.0 fixes CVE-2026-65624 (MEDIUM)** (`max_headers` bypass via
+  duplicate header names). Test-only: cowboy backs the h2c test server and is not a
+  runtime dependency.
+- **Still open upstream, and why it is not actionable here:** cowlib carries two
+  advisories with no fixed release — CVE-2026-43966 (MEDIUM, HTTP response splitting via
+  non-VCHAR bytes in `cow_http_struct_hd:escape_string/2`) and CVE-2026-43969 (LOW, cookie
+  request-header injection). Both are mitigated a layer up: gun ≥ 2.4.0 rejects CR/LF in
+  header values by default (`invalid_request_headers`), and the lock has pinned gun 2.4.1
+  since 0.5.1. Note that scanners reading the GitHub advisory will flag *any* gun release
+  as vulnerable to CVE-2026-43966 — that record lists gun's patched version as "2.16.0",
+  a cowboy version number, so no gun release can satisfy it. The ERLEF CNA record (the
+  issuing CNA) is the accurate one: "applications using gun 2.4.0 or later are protected".
+
+### Changed
+- **`grpc` 1.0.2 → 1.0.3** (and `grpc_core` to match), plus `ranch` 2.2.0 → 2.2.1.
+- **`gun` stays at 2.4.1**, which is the latest release the pool can use: grpc 1.0.3 still
+  requires `gun ~> 2.4.0`, so gun 2.5.0 is out of range on grpc 1.x. Confirmed by
+  resolution, not by inspection — `mix deps.update gun` leaves 2.4.1 in place.
+- **Raised the `:gun` requirement from `~> 2.2` to `~> 2.4`** (also updated in the README
+  install snippet). gun 2.4.0 is where `invalid_request_headers` landed — the validation
+  that mitigates CVE-2026-43966, which has no cowlib-side fix — so the floor is a security
+  boundary rather than housekeeping. Consumers on grpc 1.0 were already resolving to 2.4.x
+  because grpc requires `gun ~> 2.4.0`; this makes the real floor explicit and stops a
+  stale lock from silently sitting on 2.2.x.
+- **Typespec:** grpc 1.0.3 removed the `@type t` from `GRPC.Channel`, leaving the bare
+  struct with no named type to reference. `GrpcConnectionPool.Pool` now publishes its own
+  `@type channel :: %GRPC.Channel{}`, and `Pool.get_channel/1` specs `{:ok, channel()}`.
+  Runtime behaviour is unchanged; only the spec's spelling moved.
+- **Dialyzer filters removed, as designed.** grpc 1.0.3 fixed the `finalize_connection/2`
+  success-typing regression that 1.0.2 introduced, so both entries in
+  `.dialyzer_ignore.exs` went unused and `list_unused_filters: true` failed the build —
+  exactly the expiry the 0.5.1 notes described. The list is now empty and dialyzer is
+  clean with no suppressions.
+
+### Fixed
+- **Test suite no longer depends on port 50051 being closed.** The two pool-scaling test
+  files hardcoded `port: 50_051` for pools whose workers are never meant to connect. On
+  any machine where that port is *blackholed* rather than closed — a Docker/OrbStack
+  forward, VPN, or packet filter that drops the SYN instead of refusing it — every connect
+  burned the full 3s timeout instead of failing in ~0ms, and the resulting backoff churn
+  starved the 5s deadlines in `telemetry_test.exs`, failing three unrelated tests. Ports
+  now come from a new `TestServer.dead_port/0`, which binds port 0 and closes it so the
+  connect is genuinely refused. Full suite: 16.5s → 2.2s, green across seeds, and 78/78
+  with `mix test --include emulator` against a live Pub/Sub emulator.
+
 ## [0.5.1] - 2026-07-26
 
 ### Fixed

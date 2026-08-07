@@ -1,7 +1,7 @@
 defmodule GrpcConnectionPool.MixProject do
   use Mix.Project
 
-  @version "0.5.1"
+  @version "0.5.2"
   @source_url "https://github.com/nyo16/grpc_connection_pool"
 
   def project do
@@ -105,8 +105,11 @@ defmodule GrpcConnectionPool.MixProject do
     [
       {:backoff, "~> 1.1"},
       {:grpc, "~> 1.0"},
-      # grpc >= 1.0 makes gun optional; we use the default Gun adapter, so require it explicitly
-      {:gun, "~> 2.2"},
+      # grpc >= 1.0 makes gun optional; we use the default Gun adapter, so require it
+      # explicitly. Floor is 2.4: gun 2.4.0 added the `invalid_request_headers`
+      # validation that mitigates CVE-2026-43966 (CRLF injection via cowlib), which
+      # has no cowlib-side fix. grpc 1.0 caps gun below 2.5 in any case.
+      {:gun, "~> 2.4"},
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
