@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`content-length`, ports, `age`) now rejects leading `+`/`-`. CVE-2026-43966 and
   CVE-2026-43969 remain open upstream (`cow_http_struct_hd:escape_string/2` is unchanged);
   the gun ≥ 2.4 mitigation described under 0.5.2 still applies.
+- **Dependencies (test-only): `mint` 1.9.3 → 1.11.0, `hpax` 1.0.4 → 1.1.0, `finch` 0.23.0 →
+  0.24.0.** These only reach this project through `goth` → `finch` in `:test`, so the
+  published package is unaffected. The bump picks up mint's fixes for CVE-2026-82728,
+  CVE-2026-82729, CVE-2026-82672, CVE-2026-91043, CVE-2026-92103 and CVE-2026-94194.
+  finch has to move in the same step: with finch 0.23, mint 1.11 leaves a timed-out
+  response on the pooled HTTP/1 connection, and the next request crashes with a
+  `CaseClauseError` (fixed in finch 0.24, #397). If you use grpc's Mint adapter, or finch
+  directly, upgrade both in your own lock.
 
 ### Fixed
 - **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
