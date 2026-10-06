@@ -96,7 +96,8 @@ defmodule GrpcConnectionPool.Config do
           host: String.t() | nil,
           port: pos_integer() | nil,
           ssl: keyword() | boolean() | nil,
-          credentials: GRPC.Credential.t() | nil,
+          # grpc_core 1.0.5 dropped GRPC.Credential.t/0; spell out the struct instead.
+          credentials: %GRPC.Credential{ssl: [:ssl.tls_option()]} | nil,
           retry_config: retry_config() | nil,
           interceptors: [module()] | nil
         }

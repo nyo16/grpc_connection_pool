@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Dependencies: `grpc`/`grpc_core` 1.0.3 → 1.0.5**; dev/test tooling `dialyxir` 1.4.8,
+  `ex_doc` 0.40.4, `makeup` 1.2.3. grpc 1.0.5 registers the Gun adapter's connection
+  process in the node-local `GRPC.Client.Registry` instead of `:global`. The key still
+  includes the per-connect `ref`, so each pool worker keeps its own HTTP/2 connection.
+  The `ConnectionProcess` state the worker reads to monitor the inner gun pid is
+  unchanged.
+- **Typespec:** `t:GrpcConnectionPool.Config.endpoint_config/0` now types `:credentials`
+  as `%GRPC.Credential{}`. grpc_core 1.0.5 removed the `@type t` from `GRPC.Credential`,
+  `GRPC.RPCError` and `GRPC.Status`. Only the spec's spelling changed; runtime behaviour
+  is unchanged.
+- **Dependencies: `cowlib` 2.19.0 → 2.20.0** (runtime, via gun), with test-only `cowboy`
+  2.19.0 and `ranch` 2.3.0 (cowboy 2.19 requires cowlib ≥ 2.20). cowlib's HPACK encoder
+  now inserts only an allowlist of well-known header names into the dynamic table; every
+  other request header (`grpc-*`, custom metadata, `authorization`) is sent as a
+  never-indexed literal. That keeps bearer tokens out of the shared compression state, at
+  the cost of a few uncompressed header bytes per RPC. Numeric header parsing
+  (`content-length`, ports, `age`) now rejects leading `+`/`-`. CVE-2026-43966 and
+  CVE-2026-43969 remain open upstream (`cow_http_struct_hd:escape_string/2` is unchanged);
+  the gun ≥ 2.4 mitigation described under 0.5.2 still applies.
+- **Dependencies (test-only): `mint` 1.9.3 → 1.11.0, `hpax` 1.0.4 → 1.1.0, `finch` 0.23.0 →
+  0.24.0.** These only reach this project through `goth` → `finch` in `:test`, so the
+  published package is unaffected. The bump picks up mint's fixes for CVE-2026-82728,
+  CVE-2026-82729, CVE-2026-82672, CVE-2026-91043, CVE-2026-92103 and CVE-2026-94194.
+  finch has to move in the same step: with finch 0.23, mint 1.11 leaves a timed-out
+  response on the pooled HTTP/1 connection, and the next request crashes with a
+  `CaseClauseError` (fixed in finch 0.24, #397). If you use grpc's Mint adapter, or finch
+  directly, upgrade both in your own lock.
+
 ### Fixed
 - **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
   Test-only change — nothing in `lib/` moved, so the published package is unaffected.
