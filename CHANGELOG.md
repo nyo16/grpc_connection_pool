@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `%GRPC.Credential{}`. grpc_core 1.0.5 removed the `@type t` from `GRPC.Credential`,
   `GRPC.RPCError` and `GRPC.Status`. Only the spec's spelling changed; runtime behaviour
   is unchanged.
+- **Dependencies: `cowlib` 2.19.0 → 2.20.0** (runtime, via gun), with test-only `cowboy`
+  2.19.0 and `ranch` 2.3.0 (cowboy 2.19 requires cowlib ≥ 2.20). cowlib's HPACK encoder
+  now inserts only an allowlist of well-known header names into the dynamic table; every
+  other request header (`grpc-*`, custom metadata, `authorization`) is sent as a
+  never-indexed literal. That keeps bearer tokens out of the shared compression state, at
+  the cost of a few uncompressed header bytes per RPC. Numeric header parsing
+  (`content-length`, ports, `age`) now rejects leading `+`/`-`. CVE-2026-43966 and
+  CVE-2026-43969 remain open upstream (`cow_http_struct_hd:escape_string/2` is unchanged);
+  the gun ≥ 2.4 mitigation described under 0.5.2 still applies.
 
 ### Fixed
 - **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
