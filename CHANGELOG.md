@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Dependencies: `grpc`/`grpc_core` 1.0.3 → 1.0.5**; dev/test tooling `dialyxir` 1.4.8,
+  `ex_doc` 0.40.4, `makeup` 1.2.3. grpc 1.0.5 registers the Gun adapter's connection
+  process in the node-local `GRPC.Client.Registry` instead of `:global`. The key still
+  includes the per-connect `ref`, so each pool worker keeps its own HTTP/2 connection.
+  The `ConnectionProcess` state the worker reads to monitor the inner gun pid is
+  unchanged.
+- **Typespec:** `t:GrpcConnectionPool.Config.endpoint_config/0` now types `:credentials`
+  as `%GRPC.Credential{}`. grpc_core 1.0.5 removed the `@type t` from `GRPC.Credential`,
+  `GRPC.RPCError` and `GRPC.Status`. Only the spec's spelling changed; runtime behaviour
+  is unchanged.
+
 ### Fixed
 - **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
   Test-only change — nothing in `lib/` moved, so the published package is unaffected.
