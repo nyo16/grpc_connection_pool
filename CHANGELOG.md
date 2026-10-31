@@ -24,9 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other request header (`grpc-*`, custom metadata, `authorization`) is sent as a
   never-indexed literal. That keeps bearer tokens out of the shared compression state, at
   the cost of a few uncompressed header bytes per RPC. Numeric header parsing
-  (`content-length`, ports, `age`) now rejects leading `+`/`-`. CVE-2026-43966 and
-  CVE-2026-43969 remain open upstream (`cow_http_struct_hd:escape_string/2` is unchanged);
-  the gun ≥ 2.4 mitigation described under 0.5.2 still applies.
+  (`content-length`, ports, `age`) now rejects leading `+`/`-`. CVE-2026-43966 remains
+  open upstream (`cow_http_struct_hd:escape_string/2` is unchanged); the gun ≥ 2.4
+  mitigation described under 0.5.2 still applies. CVE-2026-43969 is fixed by cowlib 2.21.0
+  (below).
 - **Dependencies (test-only): `mint` 1.9.3 → 1.11.0, `hpax` 1.0.4 → 1.1.0, `finch` 0.23.0 →
   0.24.0.** These only reach this project through `goth` → `finch` in `:test`, so the
   published package is unaffected. The bump picks up mint's fixes for CVE-2026-82728,
@@ -35,6 +36,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response on the pooled HTTP/1 connection, and the next request crashes with a
   `CaseClauseError` (fixed in finch 0.24, #397). If you use grpc's Mint adapter, or finch
   directly, upgrade both in your own lock.
+- **Security: dependency bumps for open advisories.** These are lock-only changes. A
+  published library does not ship its `mix.lock`, so downstream projects should bump these
+  versions in their own locks.
+  - `cowlib` 2.20.0 → 2.21.0 (runtime, via gun) fixes CVE-2026-43969 (Cookie header
+    injection in `cow_cookie:cookie/1`). It also rejects all control characters in cookie
+    names and values and caps cookie size and lifetime (RFC 6265bis). Test-only `cowboy`
+    goes to 2.20.0 with it, because cowboy 2.20 requires cowlib ≥ 2.21.
+  - `protobuf` 0.17.0 → 0.17.1 (runtime, via grpc_core) fixes CVE-2026-104635: unbounded
+    recursion when `Protobuf.JSON` decodes self-referential messages. The patch only touches
+    JSON decoding. Binary protobuf decoding, which is what gRPC uses, is unchanged.
+  - `jose` 1.11.12 → 1.11.13 (test-only, via goth) fixes CVE-2026-65625 through
+    CVE-2026-65632: AES-GCM tag forgery, the RSA PKCS1-v1_5 padding oracle, the JWE zip
+    bomb, the `shared_secret` recursion, weak PBKDF2 export parameters, X25519 timing, RSA
+    factoring DoS and ECDSA signature malleability.
+  - Still open: CVE-2026-43966 (`cow_http_struct_hd:escape_string/2`). Neither cowlib nor
+    gun has a fix yet. The GHSA record lists gun as "fixed in 2.16.0", but no such gun
+    version exists. The gun ≥ 2.4 `invalid_request_headers` mitigation still applies.
+    gun 2.7.0 and googleapis 0.2.0 remain blocked by grpc's `gun ~> 2.4.0` and
+    grpc_core's `googleapis ~> 0.1.0`.
 
 ### Fixed
 - **CI: the three `telemetry_test.exs` tests no longer flake on 2-vCPU runners.**
