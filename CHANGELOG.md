@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Transitive security floors are now declared**: `{:cowlib, ">= 2.21.0"}` (via gun;
+  fixes CVE-2026-43969) and `{:protobuf, ">= 0.17.1"}` (via grpc_core; fixes
+  CVE-2026-104635). Before, consumers that ran only `mix deps.update grpc_connection_pool`
+  kept older locked versions. gun and grpc_core still set the upper bounds; these
+  entries only raise the minimum. `jose` is not a runtime dependency of this library
+  (only via the optional `goth`), so its floor belongs to consumers.
+
+## [0.5.4] - 2026-10-31
+
+Released as 0.5.3 (2026-10-06) and 0.5.4 (2026-10-31); the entries below cover both.
+
 ### Changed
 - **Dependencies: `grpc`/`grpc_core` 1.0.3 → 1.0.5**; dev/test tooling `dialyxir` 1.4.8,
   `ex_doc` 0.40.4, `makeup` 1.2.3. grpc 1.0.5 registers the Gun adapter's connection
