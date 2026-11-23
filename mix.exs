@@ -108,7 +108,7 @@ defmodule GrpcConnectionPool.MixProject do
       # grpc >= 1.0 makes gun optional; we use the default Gun adapter, so require it
       # explicitly. Floor is 2.4: gun 2.4.0 added the `invalid_request_headers`
       # validation that mitigates CVE-2026-43966 (CRLF injection via cowlib), which
-      # has no cowlib-side fix. grpc 1.0 caps gun below 2.5 in any case.
+      # has no cowlib-side fix. grpc 1.0 caps gun below 2.5; grpc 1.1 pins ~> 2.7.0.
       {:gun, "~> 2.4"},
       # Security floors for transitive runtime deps, so consumers that only bump
       # grpc_connection_pool also get the fixed versions (gun and grpc_core cap them;
